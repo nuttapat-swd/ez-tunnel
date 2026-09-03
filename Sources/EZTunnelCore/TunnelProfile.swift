@@ -2,8 +2,8 @@ import Foundation
 
 public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
-    public var displayName: String
-    public var sshHostAlias: String
+    public var displayName: TunnelProfileName
+    public var sshHostAlias: SSHHostAlias
     public var localForward: LocalForward
 
     public init(
@@ -11,21 +11,21 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
         displayName: String,
         sshHostAlias: String,
         localForward: LocalForward
-    ) {
+    ) throws {
         self.id = id
-        self.displayName = displayName
-        self.sshHostAlias = sshHostAlias
+        self.displayName = try TunnelProfileName(rawValue: displayName)
+        self.sshHostAlias = try SSHHostAlias(rawValue: sshHostAlias)
         self.localForward = localForward
     }
 }
 
 public struct LocalForward: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
-    public let name: String
-    public var listenAddress: String
-    public var listenPort: Int
-    public var destinationHost: String
-    public var destinationPort: Int
+    public let name: LocalForwardName
+    public var listenAddress: LoopbackAddress
+    public var listenPort: PortNumber
+    public var destinationHost: DestinationHost
+    public var destinationPort: PortNumber
 
     public init(
         id: UUID = UUID(),
@@ -34,12 +34,12 @@ public struct LocalForward: Codable, Equatable, Identifiable, Sendable {
         listenPort: Int,
         destinationHost: String,
         destinationPort: Int
-    ) {
+    ) throws {
         self.id = id
-        self.name = name
-        self.listenAddress = listenAddress
-        self.listenPort = listenPort
-        self.destinationHost = destinationHost
-        self.destinationPort = destinationPort
+        self.name = try LocalForwardName(rawValue: name)
+        self.listenAddress = try LoopbackAddress(validating: listenAddress)
+        self.listenPort = try PortNumber(listenPort, field: "Listen port")
+        self.destinationHost = try DestinationHost(rawValue: destinationHost)
+        self.destinationPort = try PortNumber(destinationPort, field: "Destination port")
     }
 }

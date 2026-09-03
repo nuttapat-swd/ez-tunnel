@@ -1,9 +1,10 @@
 import Foundation
-import XCTest
+import Testing
 @testable import EZTunnelCore
 
-final class FileProfilePersistenceTests: XCTestCase {
-    func testSavesAndLoadsProfileData() throws {
+struct FileProfilePersistenceTests {
+    @Test
+    func savesAndLoadsProfileData() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -11,7 +12,9 @@ final class FileProfilePersistenceTests: XCTestCase {
             fileURL: directory.appendingPathComponent("profiles.json")
         )
         let expected = Data("profile-data".utf8)
+
         try persistence.save(expected)
-        XCTAssertEqual(try persistence.load(), expected)
+
+        #expect(try persistence.load() == expected)
     }
 }

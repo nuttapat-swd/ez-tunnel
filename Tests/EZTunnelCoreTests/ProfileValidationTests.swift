@@ -1,61 +1,74 @@
-import XCTest
+import Foundation
+import Testing
 @testable import EZTunnelCore
 
-final class ProfileValidationTests: XCTestCase {
-    func testMissingRequiredValuesAreRejected() {
-        let profiles = [
-            makeProfile(displayName: " "),
-            makeProfile(sshHostAlias: ""),
-            makeProfile(forwardName: ""),
-            makeProfile(destinationHost: ""),
-        ]
-        for profile in profiles {
-            XCTAssertThrowsError(try ProfileValidator.validate(profile)) {
-                XCTAssertTrue($0 is ProfileValidationError)
-            }
+struct ProfileValidationTests {
+    @Test
+    func missingRequiredValuesAreRejectedAtConstruction() {
+        #expect(throws: ProfileValidationError.missingValue("Display name")) {
+            try makeProfile(displayName: " ")
+        }
+        #expect(throws: ProfileValidationError.missingValue("SSH Host alias")) {
+            try makeProfile(sshHostAlias: "")
+        }
+        #expect(throws: ProfileValidationError.missingValue("Local Forward name")) {
+            try makeProfile(forwardName: "")
+        }
+        #expect(throws: ProfileValidationError.missingValue("Destination host")) {
+            try makeProfile(destinationHost: "")
         }
     }
 
-    func testInvalidListenPortsAreRejected() {
-        for port in [0, -1, 65_536] {
-            XCTAssertThrowsError(try ProfileValidator.validate(makeProfile(listenPort: port))) {
-                XCTAssertEqual($0 as? ProfileValidationError, .invalidPort(field: "Listen port", value: port))
-            }
+    @Test(arguments: [0, -1, 65_536])
+    func invalidListenPortsAreRejectedAtConstruction(port: Int) {
+        #expect(throws: ProfileValidationError.invalidPort(field: "Listen port", value: port)) {
+            try makeProfile(listenPort: port)
         }
     }
 
-    func testInvalidDestinationPortsAreRejected() {
-        for port in [0, -1, 65_536] {
-            XCTAssertThrowsError(try ProfileValidator.validate(makeProfile(destinationPort: port))) {
-                XCTAssertEqual($0 as? ProfileValidationError, .invalidPort(field: "Destination port", value: port))
-            }
+    @Test(arguments: [0, -1, 65_536])
+    func invalidDestinationPortsAreRejectedAtConstruction(port: Int) {
+        #expect(throws: ProfileValidationError.invalidPort(field: "Destination port", value: port)) {
+            try makeProfile(destinationPort: port)
         }
     }
 
-    func testNonLoopbackListenAddressesAreRejected() {
-        for address in ["0.0.0.0", "localhost", "192.168.1.2", ""] {
-            XCTAssertThrowsError(try ProfileValidator.validate(makeProfile(listenAddress: address))) {
-                XCTAssertEqual($0 as? ProfileValidationError, .invalidListenAddress(address))
-            }
+    @Test(arguments: ["0.0.0.0", "localhost", "192.168.1.2", ""])
+    func nonLoopbackListenAddressesAreRejectedAtConstruction(address: String) {
+        #expect(throws: ProfileValidationError.invalidListenAddress(address)) {
+            try makeProfile(listenAddress: address)
         }
     }
 
-    func testExplicitLoopbackListenAddressesAreAccepted() {
-        for address in ["127.0.0.1", "::1"] {
-            XCTAssertNoThrow(try ProfileValidator.validate(makeProfile(listenAddress: address)))
+    @Test(arguments: ["127.0.0.1", "::1"])
+    func explicitLoopbackListenAddressesAreAccepted(address: String) throws {
+        _ = try makeProfile(listenAddress: address)
+    }
+
+    @Test
+    func ipv4LoopbackIsTheDefaultListenAddress() throws {
+        #expect(try makeProfile().localForward.listenAddress == .ipv4)
+    }
+
+    @Test
+    func profileDisplayNamesAreUniqueIgnoringCaseAndWhitespace() throws {
+        let existing = try makeProfile(displayName: "Production")
+        let duplicate = try makeProfile(displayName: " production ")
+        #expect(throws: ProfileValidationError.duplicateDisplayName(" production ")) {
+            try ProfileValidator.validate(duplicate, against: [existing])
         }
     }
 
-    func testIPv4LoopbackIsTheDefaultListenAddress() {
-        XCTAssertEqual(makeProfile().localForward.listenAddress, "127.0.0.1")
-    }
+    @Test
+    func validatedValuesPersistAsSchemaPrimitives() throws {
+        let data = try JSONEncoder().encode(makeProfile())
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let forward = try #require(json["localForward"] as? [String: Any])
 
-    func testProfileDisplayNamesAreUniqueIgnoringCaseAndWhitespace() {
-        let existing = makeProfile(displayName: "Production")
-        let duplicate = makeProfile(displayName: " production ")
-        XCTAssertThrowsError(try ProfileValidator.validate(duplicate, against: [existing])) {
-            XCTAssertEqual($0 as? ProfileValidationError, .duplicateDisplayName(" production "))
-        }
+        #expect(json["displayName"] as? String == "Development")
+        #expect(json["sshHostAlias"] as? String == "development")
+        #expect(forward["listenAddress"] as? String == "127.0.0.1")
+        #expect(forward["listenPort"] as? Int == 8080)
     }
 
     private func makeProfile(
@@ -63,8 +76,8 @@ final class ProfileValidationTests: XCTestCase {
         forwardName: String = "Web", listenAddress: String = "127.0.0.1",
         listenPort: Int = 8080, destinationHost: String = "localhost",
         destinationPort: Int = 80
-    ) -> TunnelProfile {
-        TunnelProfile(
+    ) throws -> TunnelProfile {
+        try TunnelProfile(
             displayName: displayName, sshHostAlias: sshHostAlias,
             localForward: LocalForward(
                 name: forwardName, listenAddress: listenAddress, listenPort: listenPort,

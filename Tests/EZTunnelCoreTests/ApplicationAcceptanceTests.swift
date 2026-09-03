@@ -1,67 +1,76 @@
 import Foundation
-import XCTest
+import Testing
 @testable import EZTunnelCore
 
-final class ApplicationAcceptanceTests: XCTestCase {
-    @MainActor
-    func testSavedTunnelProfileIsRestoredAfterRelaunch() throws {
+@MainActor
+struct ApplicationAcceptanceTests {
+    @Test
+    func savedTunnelProfileIsRestoredAfterRelaunch() throws {
         let persistence = InMemoryProfilePersistence()
         let firstLaunch = try EZTunnelApplication(persistence: persistence)
-        let profile = makeProfile()
+        let profile = try makeProfile()
+
         try firstLaunch.save(profile)
         let relaunched = try EZTunnelApplication(persistence: persistence)
-        XCTAssertEqual(relaunched.profiles, [profile])
+
+        #expect(relaunched.profiles == [profile])
     }
 
-    @MainActor
-    func testMenuActionOpensManagementWindowThroughOperatingSystemAdapter() throws {
-        let opener = ManagementWindowSpy()
-        let application = try EZTunnelApplication(
-            persistence: InMemoryProfilePersistence(), windowOpener: opener
-        )
-        application.perform(.openManagementWindow)
-        XCTAssertEqual(opener.openCount, 1)
-    }
-
-    @MainActor
-    func testUpdatingProfileCannotReplaceImmutableLocalForwardIdentityOrName() throws {
+    @Test
+    func updatingProfileCannotReplaceImmutableLocalForwardIdentityOrName() throws {
         let persistence = InMemoryProfilePersistence()
         let application = try EZTunnelApplication(persistence: persistence)
-        let original = makeProfile()
+        let original = try makeProfile()
         try application.save(original)
-        let replacement = TunnelProfile(
+        let replacement = try TunnelProfile(
             id: original.id,
-            displayName: original.displayName,
-            sshHostAlias: original.sshHostAlias,
+            displayName: original.displayName.rawValue,
+            sshHostAlias: original.sshHostAlias.rawValue,
             localForward: LocalForward(
                 name: "Replacement", listenPort: 5432,
                 destinationHost: "database.internal", destinationPort: 5432
             )
         )
 
-        XCTAssertThrowsError(try application.save(replacement)) {
-            XCTAssertEqual($0 as? ProfileStoreError, .immutableLocalForwardChanged)
+        #expect(throws: ProfileStoreError.immutableLocalForwardChanged) {
+            try application.save(replacement)
         }
-        XCTAssertEqual(application.profiles, [original])
+        #expect(application.profiles == [original])
     }
 
-    @MainActor
-    func testPersistedJSONIsVersionedAndContainsDefinitionDataOnly() throws {
+    @Test
+    func persistedJSONIsVersionedAndContainsDefinitionDataOnly() throws {
         let persistence = InMemoryProfilePersistence()
         let application = try EZTunnelApplication(persistence: persistence)
         try application.save(makeProfile())
-        let data = try XCTUnwrap(persistence.data)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let data = try #require(persistence.data)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let serializedJSON = String(decoding: data, as: UTF8.self)
-        XCTAssertEqual(object["schemaVersion"] as? Int, 1)
-        XCTAssertNotNil(object["profiles"])
+
+        #expect(object["schemaVersion"] as? Int == 1)
+        #expect(object["profiles"] != nil)
         for runtimeField in ["runtimeState", "pid", "retryCount", "connectionStatus"] {
-            XCTAssertFalse(serializedJSON.contains("\"\(runtimeField)\""))
+            #expect(!serializedJSON.contains("\"\(runtimeField)\""))
         }
     }
 
-    private func makeProfile() -> TunnelProfile {
-        TunnelProfile(
+    @Test
+    func relaunchRejectsDuplicateTunnelProfileIdentities() throws {
+        let profile = try makeProfile()
+        let encodedProfile = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile))
+        let data = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 1,
+            "profiles": [encodedProfile, encodedProfile],
+        ])
+        let persistence = InMemoryProfilePersistence(data: data)
+
+        #expect(throws: ProfileStoreError.duplicateTunnelProfileID(profile.id)) {
+            try EZTunnelApplication(persistence: persistence)
+        }
+    }
+
+    private func makeProfile() throws -> TunnelProfile {
+        try TunnelProfile(
             displayName: "Production database",
             sshHostAlias: "production",
             localForward: LocalForward(
@@ -73,13 +82,8 @@ final class ApplicationAcceptanceTests: XCTestCase {
 }
 
 private final class InMemoryProfilePersistence: ProfilePersistence {
-    fileprivate var data: Data?
+    var data: Data?
+    init(data: Data? = nil) { self.data = data }
     func load() throws -> Data? { data }
     func save(_ data: Data) throws { self.data = data }
-}
-
-@MainActor
-private final class ManagementWindowSpy: ManagementWindowOpening {
-    private(set) var openCount = 0
-    func openManagementWindow() { openCount += 1 }
 }

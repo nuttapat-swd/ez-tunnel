@@ -1,18 +1,9 @@
 import Foundation
 
-@MainActor
-public protocol ManagementWindowOpening {
-    func openManagementWindow()
-}
-
-public struct NoOpManagementWindowOpener: ManagementWindowOpening, Sendable {
-    public init() {}
-    public func openManagementWindow() {}
-}
-
 public enum ProfileStoreError: Error, Equatable, LocalizedError, Sendable {
     case unsupportedSchemaVersion(Int)
     case immutableLocalForwardChanged
+    case duplicateTunnelProfileID(UUID)
 
     public var errorDescription: String? {
         switch self {
@@ -20,12 +11,10 @@ public enum ProfileStoreError: Error, Equatable, LocalizedError, Sendable {
             "Profile schema version \(version) is not supported."
         case .immutableLocalForwardChanged:
             "A saved Local Forward's identity and name cannot be changed."
+        case .duplicateTunnelProfileID(let id):
+            "Tunnel Profile identity \(id.uuidString) appears more than once."
         }
     }
-}
-
-public enum ApplicationCommand: Sendable {
-    case openManagementWindow
 }
 
 @MainActor
@@ -33,16 +22,13 @@ public final class EZTunnelApplication {
     public private(set) var profiles: [TunnelProfile]
 
     private let persistence: any ProfilePersistence
-    private var windowOpener: any ManagementWindowOpening
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(
-        persistence: any ProfilePersistence,
-        windowOpener: any ManagementWindowOpening = NoOpManagementWindowOpener()
+        persistence: any ProfilePersistence
     ) throws {
         self.persistence = persistence
-        self.windowOpener = windowOpener
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
         self.encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -55,7 +41,11 @@ public final class EZTunnelApplication {
         guard document.schemaVersion == ProfileDocument.currentSchemaVersion else {
             throw ProfileStoreError.unsupportedSchemaVersion(document.schemaVersion)
         }
+        var profileIDs = Set<UUID>()
         for profile in document.profiles {
+            guard profileIDs.insert(profile.id).inserted else {
+                throw ProfileStoreError.duplicateTunnelProfileID(profile.id)
+            }
             try ProfileValidator.validate(profile, against: document.profiles)
         }
         self.profiles = document.profiles
@@ -79,16 +69,6 @@ public final class EZTunnelApplication {
         profiles = updatedProfiles
     }
 
-    public func perform(_ command: ApplicationCommand) {
-        switch command {
-        case .openManagementWindow:
-            windowOpener.openManagementWindow()
-        }
-    }
-
-    public func setManagementWindowOpener(_ windowOpener: any ManagementWindowOpening) {
-        self.windowOpener = windowOpener
-    }
 }
 
 private struct ProfileDocument: Codable {
