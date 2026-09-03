@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import EZTunnelCore
 
@@ -47,6 +48,15 @@ struct ManagementView: View {
             .formStyle(.grouped)
             .navigationTitle("New Tunnel Profile")
             .padding()
+        }
+        .onAppear {
+            DispatchQueue.main.async {
+                NSApplication.shared.setActivationPolicy(.regular)
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                let window = NSApplication.shared.windows
+                    .first(where: { $0.title == "EZ Tunnel" })
+                window?.makeKeyAndOrderFront(nil)
+            }
         }
     }
 }

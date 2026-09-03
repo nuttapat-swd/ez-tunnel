@@ -12,9 +12,14 @@ test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$info_plist")" 
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist")" = "dev.nuttapat.ez-tunnel"
 codesign --verify "$app_bundle"
 
+application_pid=""
+cleanup() {
+    test -z "$application_pid" || kill "$application_pid" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
 open -n "$app_bundle"
 attempt=0
-application_pid=""
 while test "$attempt" -lt 20; do
     application_pid=$(pgrep -f "^$executable$" | tail -n 1 || true)
     test -n "$application_pid" && break
@@ -29,5 +34,4 @@ fi
 
 sleep 0.5
 kill -0 "$application_pid"
-kill "$application_pid"
 printf 'App bundle build and launch smoke test passed: %s\n' "$app_bundle"

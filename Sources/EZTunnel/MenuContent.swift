@@ -7,7 +7,7 @@ struct MenuContent: View {
 
     var body: some View {
         Button("Open Management Window") {
-            openWindow(id: "management")
+            showManagementWindow()
         }
         .keyboardShortcut("o")
         Divider()
@@ -15,5 +15,16 @@ struct MenuContent: View {
             NSApplication.shared.terminate(nil)
         }
         .keyboardShortcut("q")
+    }
+
+    private func showManagementWindow() {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        openWindow(id: "management")
+        DispatchQueue.main.async {
+            NSApplication.shared.windows
+                .first(where: { $0.title == "EZ Tunnel" })?
+                .makeKeyAndOrderFront(nil)
+        }
     }
 }
