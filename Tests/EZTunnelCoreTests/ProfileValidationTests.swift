@@ -4,6 +4,22 @@ import Testing
 
 struct ProfileValidationTests {
     @Test
+    func sshHostAliasIsAlsoUsedAsTunnelProfileDisplayName() throws {
+        let localForward = try LocalForward(
+            name: "Web", listenPort: 8080,
+            destinationHost: "localhost", destinationPort: 80
+        )
+
+        let profile = try TunnelProfile(
+            sshHostAlias: "development",
+            localForward: localForward
+        )
+
+        #expect(profile.displayName.rawValue == "development")
+        #expect(profile.sshHostAlias.rawValue == "development")
+    }
+
+    @Test
     func missingRequiredValuesAreRejectedAtConstruction() {
         #expect(throws: ProfileValidationError.missingValue("Display name")) {
             try makeProfile(displayName: " ")

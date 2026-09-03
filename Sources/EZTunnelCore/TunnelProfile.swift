@@ -17,6 +17,19 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
         self.sshHostAlias = try SSHHostAlias(rawValue: sshHostAlias)
         self.localForward = localForward
     }
+
+    public init(
+        id: UUID = UUID(),
+        sshHostAlias: String,
+        localForward: LocalForward
+    ) throws {
+        try self.init(
+            id: id,
+            displayName: sshHostAlias,
+            sshHostAlias: sshHostAlias,
+            localForward: localForward
+        )
+    }
 }
 
 public struct LocalForward: Codable, Equatable, Identifiable, Sendable {

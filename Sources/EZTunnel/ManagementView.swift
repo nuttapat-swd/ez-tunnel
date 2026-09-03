@@ -18,8 +18,10 @@ struct ManagementView: View {
         } detail: {
             Form {
                 Section("Tunnel Profile") {
-                    TextField("Display name", text: $draft.displayName)
                     TextField("SSH Host alias", text: $draft.sshHostAlias)
+                    Text("This is also the Tunnel Profile name.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Local Forward") {
                     TextField("Name", text: $draft.forwardName)
@@ -64,7 +66,6 @@ struct ManagementView: View {
 private struct ProfileDraft {
     private let profileID = UUID()
     private let forwardID = UUID()
-    var displayName = ""
     var sshHostAlias = ""
     var forwardName = ""
     var listenAddress = "127.0.0.1"
@@ -78,7 +79,6 @@ private struct ProfileDraft {
         }
         return try TunnelProfile(
             id: profileID,
-            displayName: displayName,
             sshHostAlias: sshHostAlias,
             localForward: try LocalForward(
                 id: forwardID,
