@@ -1,8 +1,9 @@
-import AppKit
 import SwiftUI
+import EZTunnelAppSupport
 
 struct MenuContent: View {
     @ObservedObject var model: ApplicationModel
+    let windowPresenter: ManagementWindowPresenter
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -18,13 +19,8 @@ struct MenuContent: View {
     }
 
     private func showManagementWindow() {
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        openWindow(id: "management")
-        DispatchQueue.main.async {
-            NSApplication.shared.windows
-                .first(where: { $0.title == "EZ Tunnel" })?
-                .makeKeyAndOrderFront(nil)
+        windowPresenter.present {
+            openWindow(id: "management")
         }
     }
 }

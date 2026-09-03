@@ -3,8 +3,4 @@
 *.xcodeproj/xcuserdata/
 DerivedData/
 .DS_Store
-
-docs/
 .vscode/
-*.md
-!README.md

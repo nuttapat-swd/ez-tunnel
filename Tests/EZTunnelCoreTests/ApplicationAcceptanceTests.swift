@@ -17,31 +17,6 @@ struct ApplicationAcceptanceTests {
     }
 
     @Test
-    func updatingProfileCannotReplaceImmutableLocalForwardIdentityOrName() throws {
-        let persistence = InMemoryProfilePersistence()
-        let application = try EZTunnelApplication(persistence: persistence)
-        let original = try makeProfile()
-        try application.save(original)
-        let replacement = try TunnelProfile(
-            id: original.id,
-            displayName: original.displayName.rawValue,
-            sshHostname: original.sshHostname.rawValue,
-            sshPort: original.sshPort.rawValue,
-            sshUsername: original.sshUsername?.rawValue,
-            authenticationMethod: original.authenticationMethod,
-            destinationHost: original.destinationHost.rawValue,
-            localForwards: [
-                LocalForward(name: "Replacement", listenPort: 5432, destinationPort: 5432),
-            ]
-        )
-
-        #expect(throws: ProfileStoreError.immutableLocalForwardChanged) {
-            try application.save(replacement)
-        }
-        #expect(application.profiles == [original])
-    }
-
-    @Test
     func persistedJSONIsVersionedAndContainsDefinitionDataOnly() throws {
         let persistence = InMemoryProfilePersistence()
         let application = try EZTunnelApplication(persistence: persistence)
@@ -124,7 +99,11 @@ struct ApplicationAcceptanceTests {
 
         try application.save(profile, credential: " secret with spaces ")
 
-        #expect(try credentials.credential(for: profile.id) == " secret with spaces ")
+        #expect(
+            try credentials.credential(
+                for: SSHCredentialKey(profileID: profile.id, kind: .password)
+            ) == " secret with spaces "
+        )
         let json = String(decoding: try #require(persistence.data), as: UTF8.self)
         #expect(!json.contains("secret with spaces"))
     }
@@ -195,13 +174,13 @@ struct ApplicationAcceptanceTests {
 }
 
 private final class InMemoryCredentialStore: SSHCredentialStore {
-    private var credentials = [UUID: String]()
-    func credential(for profileID: UUID) throws -> String? { credentials[profileID] }
-    func setCredential(_ credential: String, for profileID: UUID) throws {
-        credentials[profileID] = credential
+    private var credentials = [SSHCredentialKey: String]()
+    func credential(for key: SSHCredentialKey) throws -> String? { credentials[key] }
+    func setCredential(_ credential: String, for key: SSHCredentialKey) throws {
+        credentials[key] = credential
     }
-    func removeCredential(for profileID: UUID) throws {
-        credentials[profileID] = nil
+    func removeCredential(for key: SSHCredentialKey) throws {
+        credentials[key] = nil
     }
 }
 

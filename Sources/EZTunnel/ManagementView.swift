@@ -1,29 +1,43 @@
-import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import EZTunnelAppSupport
 import EZTunnelCore
 
 struct ManagementView: View {
     @ObservedObject var model: ApplicationModel
-    @State private var draft = ProfileDraft()
+    let windowPresenter: ManagementWindowPresenter
+    @State private var draft = TunnelProfileDraft()
+    @State private var selectedProfileID: UUID?
     @State private var isChoosingPrivateKey = false
 
     var body: some View {
         NavigationSplitView {
-            List(model.profiles) { profile in
+            List(model.profiles, selection: $selectedProfileID) { profile in
                 VStack(alignment: .leading) {
                     Text(profile.displayName.rawValue).font(.headline)
                     Text(
                         "\(profile.localForwards.count) "
-                            + (profile.localForwards.count == 1 ? "port" : "ports")
+                            + (profile.localForwards.count == 1
+                                ? "Local Forward" : "Local Forwards")
                     )
                         .foregroundStyle(.secondary)
                 }
+                .tag(profile.id)
             }
             .navigationTitle("Tunnel Profiles")
+            .toolbar {
+                ToolbarItem {
+                    Button("New Profile", systemImage: "plus") {
+                        selectedProfileID = nil
+                        draft = TunnelProfileDraft()
+                        model.errorMessage = nil
+                    }
+                }
+            }
         } detail: {
             Form {
                 Section("Tunnel Profile") {
+                    TextField("Profile name", text: $draft.displayName)
                     TextField("SSH hostname", text: $draft.sshHostname)
                     TextField("SSH port", text: $draft.sshPort)
                     TextField("Username (optional)", text: $draft.sshUsername)
@@ -59,7 +73,7 @@ struct ManagementView: View {
                             TextField("Listen port", text: $localForward.listenPort)
                             TextField("Destination port", text: $localForward.destinationPort)
                             if draft.localForwards.count > 1 {
-                                Button("Remove Port", role: .destructive) {
+                                Button("Remove Local Forward", role: .destructive) {
                                     draft.removeLocalForward(id: localForward.id)
                                 }
                             }
@@ -67,7 +81,7 @@ struct ManagementView: View {
                         .padding(.vertical, 4)
                     }
 
-                    Button("Add Port", systemImage: "plus") {
+                    Button("Add Local Forward", systemImage: "plus") {
                         draft.addLocalForward()
                     }
                 }
@@ -77,8 +91,10 @@ struct ManagementView: View {
                 }
                 Button("Save Tunnel Profile") {
                     do {
-                        if model.save(try draft.makeProfile(), credential: draft.credential) {
-                            draft = ProfileDraft()
+                        let profile = try draft.makeProfile()
+                        if model.save(profile, credential: draft.credential) {
+                            selectedProfileID = profile.id
+                            draft = TunnelProfileDraft(profile: profile)
                         }
                     } catch {
                         model.errorMessage = error.localizedDescription
@@ -87,7 +103,7 @@ struct ManagementView: View {
                 .keyboardShortcut(.defaultAction)
             }
             .formStyle(.grouped)
-            .navigationTitle("New Tunnel Profile")
+            .navigationTitle(selectedProfileID == nil ? "New Tunnel Profile" : "Edit Tunnel Profile")
             .padding()
         }
         .fileImporter(
@@ -99,72 +115,22 @@ struct ManagementView: View {
                 draft.privateKeyPath = url.path
             }
         }
-        .onAppear {
-            DispatchQueue.main.async {
-                NSApplication.shared.setActivationPolicy(.regular)
-                NSApplication.shared.activate(ignoringOtherApps: true)
-                NSApplication.shared.windows
-                    .first(where: { $0.title == "EZ Tunnel" })?
-                    .makeKeyAndOrderFront(nil)
+        .onChange(of: selectedProfileID) { profileID in
+            guard let selectedDraft = TunnelProfileSelection.draft(
+                selecting: profileID,
+                from: model.profiles
+            ) else {
+                return
             }
+            draft = selectedDraft
+            model.errorMessage = nil
         }
-    }
-}
-
-private struct ProfileDraft {
-    private let profileID = UUID()
-    var sshHostname = ""
-    var sshPort = "22"
-    var sshUsername = ""
-    var authenticationMethod = SSHAuthenticationMethod.systemDefault
-    var privateKeyPath = ""
-    var credential = ""
-    var listenAddress = "127.0.0.1"
-    var destinationHost = ""
-    var localForwards = [LocalForwardDraft()]
-
-    mutating func addLocalForward() {
-        localForwards.append(LocalForwardDraft())
-    }
-
-    mutating func removeLocalForward(id: UUID) {
-        localForwards.removeAll { $0.id == id }
-    }
-
-    func makeProfile() throws -> TunnelProfile {
-        guard let sshPort = Int(sshPort) else {
-            throw ProfileValidationError.invalidPort(field: "SSH port", value: 0)
+        .onAppear {
+            if selectedProfileID == nil, let firstProfile = model.profiles.first {
+                selectedProfileID = firstProfile.id
+                draft = TunnelProfileDraft(profile: firstProfile)
+            }
+            windowPresenter.present {}
         }
-        let forwards = try localForwards.map { try $0.makeLocalForward() }
-        return try TunnelProfile(
-            id: profileID,
-            sshHostname: sshHostname,
-            sshPort: sshPort,
-            sshUsername: sshUsername,
-            authenticationMethod: authenticationMethod,
-            privateKeyPath: privateKeyPath,
-            listenAddress: listenAddress,
-            destinationHost: destinationHost,
-            localForwards: forwards
-        )
-    }
-}
-
-private struct LocalForwardDraft: Identifiable {
-    let id = UUID()
-    var name = ""
-    var listenPort = ""
-    var destinationPort = ""
-
-    func makeLocalForward() throws -> LocalForward {
-        guard let listenPort = Int(listenPort), let destinationPort = Int(destinationPort) else {
-            throw ProfileValidationError.invalidPort(field: "Port", value: 0)
-        }
-        return try LocalForward(
-            id: id,
-            name: name,
-            listenPort: listenPort,
-            destinationPort: destinationPort
-        )
     }
 }

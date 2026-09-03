@@ -7,11 +7,19 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .library(name: "EZTunnelCore", targets: ["EZTunnelCore"]),
+        .library(name: "EZTunnelAppSupport", targets: ["EZTunnelAppSupport"]),
         .executable(name: "EZTunnel", targets: ["EZTunnel"]),
     ],
     targets: [
         .target(name: "EZTunnelCore"),
-        .executableTarget(name: "EZTunnel", dependencies: ["EZTunnelCore"]),
-        .testTarget(name: "EZTunnelCoreTests", dependencies: ["EZTunnelCore"]),
+        .target(name: "EZTunnelAppSupport", dependencies: ["EZTunnelCore"]),
+        .executableTarget(
+            name: "EZTunnel",
+            dependencies: ["EZTunnelCore", "EZTunnelAppSupport"]
+        ),
+        .testTarget(
+            name: "EZTunnelCoreTests",
+            dependencies: ["EZTunnelCore", "EZTunnelAppSupport"]
+        ),
     ]
 )

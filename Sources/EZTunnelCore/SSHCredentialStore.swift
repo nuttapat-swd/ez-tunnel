@@ -1,16 +1,31 @@
 import Foundation
 
+public enum SSHCredentialKind: String, CaseIterable, Sendable {
+    case password
+    case privateKeyPassphrase
+}
+
+public struct SSHCredentialKey: Hashable, Sendable {
+    public let profileID: UUID
+    public let kind: SSHCredentialKind
+
+    public init(profileID: UUID, kind: SSHCredentialKind) {
+        self.profileID = profileID
+        self.kind = kind
+    }
+}
+
 public protocol SSHCredentialStore {
-    func credential(for profileID: UUID) throws -> String?
-    func setCredential(_ credential: String, for profileID: UUID) throws
-    func removeCredential(for profileID: UUID) throws
+    func credential(for key: SSHCredentialKey) throws -> String?
+    func setCredential(_ credential: String, for key: SSHCredentialKey) throws
+    func removeCredential(for key: SSHCredentialKey) throws
 }
 
 public struct UnavailableSSHCredentialStore: SSHCredentialStore, Sendable {
     public init() {}
-    public func credential(for profileID: UUID) throws -> String? { nil }
-    public func setCredential(_ credential: String, for profileID: UUID) throws {
+    public func credential(for key: SSHCredentialKey) throws -> String? { nil }
+    public func setCredential(_ credential: String, for key: SSHCredentialKey) throws {
         throw CocoaError(.featureUnsupported)
     }
-    public func removeCredential(for profileID: UUID) throws {}
+    public func removeCredential(for key: SSHCredentialKey) throws {}
 }

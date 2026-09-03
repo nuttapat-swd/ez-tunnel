@@ -2,15 +2,12 @@ import Foundation
 
 public enum ProfileStoreError: Error, Equatable, LocalizedError, Sendable {
     case unsupportedSchemaVersion(Int)
-    case immutableLocalForwardChanged
     case duplicateTunnelProfileID(UUID)
 
     public var errorDescription: String? {
         switch self {
         case .unsupportedSchemaVersion(let version):
             "Profile schema version \(version) is not supported."
-        case .immutableLocalForwardChanged:
-            "A saved Local Forward's identity and name cannot be changed."
         case .duplicateTunnelProfileID(let id):
             "Tunnel Profile identity \(id.uuidString) appears more than once."
         }
@@ -67,46 +64,71 @@ public final class EZTunnelApplication {
     public func save(_ profile: TunnelProfile, credential: String? = nil) throws {
         try ProfileValidator.validate(profile, against: profiles)
         let suppliedCredential = credential
-        let previousCredential = try credentialStore.credential(for: profile.id)
+        let activeCredentialKey = profile.authenticationMethod.credentialKind.map {
+            SSHCredentialKey(profileID: profile.id, kind: $0)
+        }
+        // Only touch the selected kind so changing authentication methods can
+        // neither read nor overwrite a secret belonging to another kind.
+        let credentialKeys = activeCredentialKey.map { [$0] } ?? SSHCredentialKind.allCases.map {
+            SSHCredentialKey(profileID: profile.id, kind: $0)
+        }
+        let previousCredentials = try Dictionary(
+            uniqueKeysWithValues: credentialKeys.map { key in
+                (key, try credentialStore.credential(for: key))
+            }
+        )
+        let previousActiveCredential = activeCredentialKey.flatMap { previousCredentials[$0] ?? nil }
         if profile.authenticationMethod == .password,
            suppliedCredential?.isEmpty != false,
-           previousCredential == nil {
+           previousActiveCredential == nil {
             throw ProfileValidationError.passwordRequired
         }
         var updatedProfiles = profiles
         if let index = updatedProfiles.firstIndex(where: { $0.id == profile.id }) {
-            for savedForward in updatedProfiles[index].localForwards {
-                guard let updatedForward = profile.localForwards.first(where: { $0.id == savedForward.id }),
-                      updatedForward.name == savedForward.name else {
-                    throw ProfileStoreError.immutableLocalForwardChanged
-                }
-            }
             updatedProfiles[index] = profile
         } else {
             updatedProfiles.append(profile)
         }
         let data = try encoder.encode(ProfileDocument(profiles: updatedProfiles))
-        let desiredCredential = profile.authenticationMethod == .systemDefault
-            ? nil
-            : suppliedCredential?.isEmpty == false ? suppliedCredential : previousCredential
-        try setCredential(desiredCredential, for: profile.id)
         do {
+            if let activeCredentialKey {
+                let desiredCredential = suppliedCredential?.isEmpty == false
+                    ? suppliedCredential
+                    : previousActiveCredential
+                try setCredential(desiredCredential, for: activeCredentialKey)
+            } else {
+                for key in credentialKeys {
+                    try setCredential(nil, for: key)
+                }
+            }
             try persistence.save(data)
         } catch {
-            try? setCredential(previousCredential, for: profile.id)
+            for key in credentialKeys {
+                try? setCredential(previousCredentials[key] ?? nil, for: key)
+            }
             throw error
         }
         profiles = updatedProfiles
     }
 
-    private func setCredential(_ credential: String?, for profileID: UUID) throws {
+    private func setCredential(_ credential: String?, for key: SSHCredentialKey) throws {
         if let credential {
-            try credentialStore.setCredential(credential, for: profileID)
+            try credentialStore.setCredential(credential, for: key)
         } else {
-            try credentialStore.removeCredential(for: profileID)
+            try credentialStore.removeCredential(for: key)
         }
     }
 
+}
+
+private extension SSHAuthenticationMethod {
+    var credentialKind: SSHCredentialKind? {
+        switch self {
+        case .systemDefault: nil
+        case .privateKey: .privateKeyPassphrase
+        case .password: .password
+        }
+    }
 }
 
 private struct ProfileDocument: Codable {
