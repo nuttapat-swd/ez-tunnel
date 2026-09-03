@@ -9,6 +9,8 @@ public enum ProfileValidationError: Error, Equatable, LocalizedError, Sendable {
     case duplicateLocalForwardID(UUID)
     case duplicateLocalForwardName(String)
     case duplicateListenPort(Int)
+    case privateKeyPathRequired
+    case passwordRequired
 
     public var errorDescription: String? {
         switch self {
@@ -28,6 +30,10 @@ public enum ProfileValidationError: Error, Equatable, LocalizedError, Sendable {
             "A Local Forward named \(name) already exists in this Tunnel Profile."
         case .duplicateListenPort(let port):
             "Listen port \(port) is used more than once in this Tunnel Profile."
+        case .privateKeyPathRequired:
+            "Select a private key file."
+        case .passwordRequired:
+            "Enter the SSH password."
         }
     }
 }
@@ -35,6 +41,9 @@ public enum ProfileValidationError: Error, Equatable, LocalizedError, Sendable {
 public enum ProfileValidator {
     public static func validate(_ profile: TunnelProfile, against profiles: [TunnelProfile] = []) throws {
         try validateLocalForwards(profile.localForwards)
+        if profile.authenticationMethod == .privateKey, profile.privateKeyPath == nil {
+            throw ProfileValidationError.privateKeyPathRequired
+        }
         let normalizedName = profile.displayName.rawValue
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if profiles.contains(where: {

@@ -1,10 +1,12 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import EZTunnelCore
 
 struct ManagementView: View {
     @ObservedObject var model: ApplicationModel
     @State private var draft = ProfileDraft()
+    @State private var isChoosingPrivateKey = false
 
     var body: some View {
         NavigationSplitView {
@@ -22,7 +24,27 @@ struct ManagementView: View {
         } detail: {
             Form {
                 Section("Tunnel Profile") {
-                    TextField("SSH Host alias", text: $draft.sshHostAlias)
+                    TextField("SSH hostname", text: $draft.sshHostname)
+                    TextField("SSH port", text: $draft.sshPort)
+                    TextField("Username (optional)", text: $draft.sshUsername)
+                    Picker("Authentication", selection: $draft.authenticationMethod) {
+                        ForEach(SSHAuthenticationMethod.allCases, id: \.self) { method in
+                            Text(method.displayName).tag(method)
+                        }
+                    }
+                    if draft.authenticationMethod == .privateKey {
+                        TextField("Private key file", text: $draft.privateKeyPath)
+                        Button("Choose Private Key…") {
+                            isChoosingPrivateKey = true
+                        }
+                        SecureField("Private key passphrase (optional)", text: $draft.credential)
+                    }
+                    if draft.authenticationMethod == .password {
+                        SecureField("SSH password", text: $draft.credential)
+                        Text("Stored in macOS Keychain, never in profile JSON.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Picker("Local host", selection: $draft.listenAddress) {
                         Text("127.0.0.1").tag("127.0.0.1")
                         Text("::1").tag("::1")
@@ -55,7 +77,7 @@ struct ManagementView: View {
                 }
                 Button("Save Tunnel Profile") {
                     do {
-                        if model.save(try draft.makeProfile()) {
+                        if model.save(try draft.makeProfile(), credential: draft.credential) {
                             draft = ProfileDraft()
                         }
                     } catch {
@@ -67,6 +89,15 @@ struct ManagementView: View {
             .formStyle(.grouped)
             .navigationTitle("New Tunnel Profile")
             .padding()
+        }
+        .fileImporter(
+            isPresented: $isChoosingPrivateKey,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                draft.privateKeyPath = url.path
+            }
         }
         .onAppear {
             DispatchQueue.main.async {
@@ -82,7 +113,12 @@ struct ManagementView: View {
 
 private struct ProfileDraft {
     private let profileID = UUID()
-    var sshHostAlias = ""
+    var sshHostname = ""
+    var sshPort = "22"
+    var sshUsername = ""
+    var authenticationMethod = SSHAuthenticationMethod.systemDefault
+    var privateKeyPath = ""
+    var credential = ""
     var listenAddress = "127.0.0.1"
     var destinationHost = ""
     var localForwards = [LocalForwardDraft()]
@@ -96,10 +132,17 @@ private struct ProfileDraft {
     }
 
     func makeProfile() throws -> TunnelProfile {
+        guard let sshPort = Int(sshPort) else {
+            throw ProfileValidationError.invalidPort(field: "SSH port", value: 0)
+        }
         let forwards = try localForwards.map { try $0.makeLocalForward() }
         return try TunnelProfile(
             id: profileID,
-            sshHostAlias: sshHostAlias,
+            sshHostname: sshHostname,
+            sshPort: sshPort,
+            sshUsername: sshUsername,
+            authenticationMethod: authenticationMethod,
+            privateKeyPath: privateKeyPath,
             listenAddress: listenAddress,
             destinationHost: destinationHost,
             localForwards: forwards

@@ -22,13 +22,16 @@ public final class EZTunnelApplication {
     public private(set) var profiles: [TunnelProfile]
 
     private let persistence: any ProfilePersistence
+    private let credentialStore: any SSHCredentialStore
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(
-        persistence: any ProfilePersistence
+        persistence: any ProfilePersistence,
+        credentialStore: any SSHCredentialStore = UnavailableSSHCredentialStore()
     ) throws {
         self.persistence = persistence
+        self.credentialStore = credentialStore
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
         self.encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -42,6 +45,9 @@ public final class EZTunnelApplication {
         switch header.schemaVersion {
         case 1:
             loadedProfiles = try decoder.decode(LegacyProfileDocument.self, from: data)
+                .profiles.map { try $0.migrated() }
+        case 2:
+            loadedProfiles = try decoder.decode(LegacyVersionTwoProfileDocument.self, from: data)
                 .profiles.map { try $0.migrated() }
         case ProfileDocument.currentSchemaVersion:
             loadedProfiles = try decoder.decode(ProfileDocument.self, from: data).profiles
@@ -58,8 +64,15 @@ public final class EZTunnelApplication {
         self.profiles = loadedProfiles
     }
 
-    public func save(_ profile: TunnelProfile) throws {
+    public func save(_ profile: TunnelProfile, credential: String? = nil) throws {
         try ProfileValidator.validate(profile, against: profiles)
+        let suppliedCredential = credential
+        let previousCredential = try credentialStore.credential(for: profile.id)
+        if profile.authenticationMethod == .password,
+           suppliedCredential?.isEmpty != false,
+           previousCredential == nil {
+            throw ProfileValidationError.passwordRequired
+        }
         var updatedProfiles = profiles
         if let index = updatedProfiles.firstIndex(where: { $0.id == profile.id }) {
             for savedForward in updatedProfiles[index].localForwards {
@@ -73,14 +86,31 @@ public final class EZTunnelApplication {
             updatedProfiles.append(profile)
         }
         let data = try encoder.encode(ProfileDocument(profiles: updatedProfiles))
-        try persistence.save(data)
+        let desiredCredential = profile.authenticationMethod == .systemDefault
+            ? nil
+            : suppliedCredential?.isEmpty == false ? suppliedCredential : previousCredential
+        try setCredential(desiredCredential, for: profile.id)
+        do {
+            try persistence.save(data)
+        } catch {
+            try? setCredential(previousCredential, for: profile.id)
+            throw error
+        }
         profiles = updatedProfiles
+    }
+
+    private func setCredential(_ credential: String?, for profileID: UUID) throws {
+        if let credential {
+            try credentialStore.setCredential(credential, for: profileID)
+        } else {
+            try credentialStore.removeCredential(for: profileID)
+        }
     }
 
 }
 
 private struct ProfileDocument: Codable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     let schemaVersion: Int
     let profiles: [TunnelProfile]
@@ -102,14 +132,14 @@ private struct LegacyProfileDocument: Decodable {
 private struct LegacyTunnelProfile: Decodable {
     let id: UUID
     let displayName: TunnelProfileName
-    let sshHostAlias: SSHHostAlias
+    let sshHostAlias: LegacySSHHostAlias
     let localForward: LegacyLocalForward
 
     func migrated() throws -> TunnelProfile {
         try TunnelProfile(
             id: id,
             displayName: displayName.rawValue,
-            sshHostAlias: sshHostAlias.rawValue,
+            sshHostname: sshHostAlias.rawValue,
             listenAddress: localForward.listenAddress.rawValue,
             destinationHost: localForward.destinationHost.rawValue,
             localForwards: [
@@ -120,6 +150,30 @@ private struct LegacyTunnelProfile: Decodable {
                     destinationPort: localForward.destinationPort.rawValue
                 ),
             ]
+        )
+    }
+}
+
+private struct LegacyVersionTwoProfileDocument: Decodable {
+    let profiles: [LegacyVersionTwoTunnelProfile]
+}
+
+private struct LegacyVersionTwoTunnelProfile: Decodable {
+    let id: UUID
+    let displayName: TunnelProfileName
+    let sshHostAlias: LegacySSHHostAlias
+    let listenAddress: LoopbackAddress
+    let destinationHost: DestinationHost
+    let localForwards: [LocalForward]
+
+    func migrated() throws -> TunnelProfile {
+        try TunnelProfile(
+            id: id,
+            displayName: displayName.rawValue,
+            sshHostname: sshHostAlias.rawValue,
+            listenAddress: listenAddress.rawValue,
+            destinationHost: destinationHost.rawValue,
+            localForwards: localForwards
         )
     }
 }

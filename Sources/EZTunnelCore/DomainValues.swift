@@ -25,11 +25,29 @@ public struct TunnelProfileName: ValidatedStringValue, Equatable, Hashable, Send
     }
 }
 
-public struct SSHHostAlias: ValidatedStringValue, Equatable, Hashable, Sendable {
+struct LegacySSHHostAlias: ValidatedStringValue, Equatable, Hashable, Sendable {
+    let rawValue: String
+
+    init(rawValue: String) throws {
+        try requireValue(rawValue, field: "SSH Host alias")
+        self.rawValue = rawValue
+    }
+}
+
+public struct SSHHostname: ValidatedStringValue, Equatable, Hashable, Sendable {
     public let rawValue: String
 
     public init(rawValue: String) throws {
-        try requireValue(rawValue, field: "SSH Host alias")
+        try requireValue(rawValue, field: "SSH hostname")
+        self.rawValue = rawValue
+    }
+}
+
+public struct SSHUsername: ValidatedStringValue, Equatable, Hashable, Sendable {
+    public let rawValue: String
+
+    public init(rawValue: String) throws {
+        try requireValue(rawValue, field: "SSH username")
         self.rawValue = rawValue
     }
 }

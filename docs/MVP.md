@@ -12,7 +12,8 @@ Each Tunnel Profile has:
 
 - an immutable UUID;
 - a case-insensitively unique display name;
-- exactly one OpenSSH `Host` alias;
+- exactly one SSH endpoint containing a hostname, SSH port, and optional username;
+- an authentication method (SSH Agent/System Default, private key file, or password);
 - an auto-start setting; and
 - one shared loopback listen address and destination host for its Local Forwards; and
 - one or more Port Forwards, started and stopped as a unit.
@@ -31,11 +32,11 @@ Duplicate listen endpoints within one profile are invalid. Profiles may reuse an
 
 EZ Tunnel launches and supervises `/usr/bin/ssh`; one SSH process is owned by each Active Profile. Connections are not shared between profiles.
 
-The referenced `Host` alias is resolved by OpenSSH configuration, including `HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, wildcard rules, `Match`, and `Include`. Jump Host chains therefore remain owned by OpenSSH configuration. The profile editor offers best-effort alias autocomplete but accepts aliases it could not discover, and uses `ssh -G` for authoritative resolution.
+The profile supplies its SSH hostname, port, optional username, and authentication method directly. EZ Tunnel does not require or resolve a `Host` alias from OpenSSH configuration. SSH Agent/System Default is preferred for unattended operation. A private-key path may be stored in profile JSON; passwords and passphrases are stored only in macOS Keychain and never passed as command-line arguments. Password authentication is available only for manual starts.
 
-The app generates only the forwarding and lifecycle arguments it understands. It provides no arbitrary SSH argument or shell-command field; other SSH behavior belongs in OpenSSH configuration.
+The app generates only the endpoint, authentication, forwarding, and lifecycle arguments it understands. It provides no arbitrary SSH argument or shell-command field.
 
-Saving requires static validation but never requires network access. A separate Test Connection action verifies alias resolution, Jump Hosts, host trust, and authentication without opening Port Forwards. Starting a profile performs the real bind checks.
+Saving requires static validation but never requires network access. A separate Test Connection action verifies hostname resolution, host trust, and authentication without opening Port Forwards. Starting a profile performs the real bind checks.
 
 ## Lifecycle and state
 
@@ -50,7 +51,7 @@ Connecting/Connected/Reconnecting/Needs Attention -> Stopping -> Stopped
 
 A profile becomes Connected only after its SSH connection and every Port Forward are ready. Startup is all-or-nothing: if one forward cannot bind, the complete profile connection is stopped and the error identifies the failing forward and endpoint. Connected does not imply that an application behind the tunnel is healthy; no destination service probes are performed.
 
-Starting a profile makes it Active until the user stops it or quits EZ Tunnel. Temporary failures such as network loss, timeout, or server unavailability enter Reconnecting and retry with exponential backoff (initially `1, 2, 5, 10, 30` seconds, capped at 30 seconds). Problems requiring intervention—including unavailable credentials, host-key decisions, invalid configuration, unresolved aliases, and occupied ports—enter Needs Attention and pause retries.
+Starting a profile makes it Active until the user stops it or quits EZ Tunnel. Temporary failures such as network loss, timeout, or server unavailability enter Reconnecting and retry with exponential backoff (initially `1, 2, 5, 10, 30` seconds, capped at 30 seconds). Problems requiring intervention—including unavailable credentials, host-key decisions, invalid configuration, unresolved hostnames, and occupied ports—enter Needs Attention and pause retries.
 
 Auto-start is configured per profile. When at least one profile is configured for auto-start, EZ Tunnel runs as a macOS login item and starts those profiles without interactive prompts. Profiles started manually also reconnect until explicitly stopped, but they do not become auto-start profiles.
 
@@ -60,7 +61,7 @@ Every child SSH process carries app-specific ownership metadata. Crash recovery 
 
 ## Configuration changes
 
-Editing a connected profile or its referenced OpenSSH configuration does not interrupt the current connection. The UI displays a Configuration Changed badge and offers Restart Now. The latest saved values take effect on a user-requested restart or the next reconnect.
+Editing a connected profile does not interrupt the current connection. The UI displays a Configuration Changed badge and offers Restart Now. The latest saved values take effect on a user-requested restart or the next reconnect.
 
 Profile data is stored as atomically written, schema-versioned JSON in Application Support. Runtime state, PIDs, retry counters, and connection status are not fields in the profile schema.
 
@@ -70,7 +71,7 @@ Deleting an Active Profile requires confirmation, stops its owned tunnel, and th
 
 ## Trust and credentials
 
-EZ Tunnel does not store SSH passwords, read or store private keys, or replace OpenSSH credential management. Authentication uses OpenSSH, ssh-agent, and macOS Keychain. Manual starts may show a system password or passphrase prompt. Auto-start and background reconnect never prompt; they enter Needs Attention when interaction is required.
+EZ Tunnel stores passwords and private-key passphrases only in macOS Keychain. Profile JSON may contain a selected private-key path but never secret material. Authentication uses `/usr/bin/ssh`, ssh-agent, and macOS Keychain. Password authentication is manual-only. Auto-start and background reconnect never prompt; they require SSH Agent/System Default or a non-interactive private key and enter Needs Attention when interaction is required.
 
 New SSH host keys require explicit manual approval after showing host, key type, and fingerprint. Unattended attempts never accept a key. A changed host key is presented as a higher-severity security event and cannot be replaced with one click.
 

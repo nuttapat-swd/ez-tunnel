@@ -25,7 +25,10 @@ struct ApplicationAcceptanceTests {
         let replacement = try TunnelProfile(
             id: original.id,
             displayName: original.displayName.rawValue,
-            sshHostAlias: original.sshHostAlias.rawValue,
+            sshHostname: original.sshHostname.rawValue,
+            sshPort: original.sshPort.rawValue,
+            sshUsername: original.sshUsername?.rawValue,
+            authenticationMethod: original.authenticationMethod,
             destinationHost: original.destinationHost.rawValue,
             localForwards: [
                 LocalForward(name: "Replacement", listenPort: 5432, destinationPort: 5432),
@@ -47,7 +50,7 @@ struct ApplicationAcceptanceTests {
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let serializedJSON = String(decoding: data, as: UTF8.self)
 
-        #expect(object["schemaVersion"] as? Int == 2)
+        #expect(object["schemaVersion"] as? Int == 3)
         #expect(object["profiles"] != nil)
         for runtimeField in ["runtimeState", "pid", "retryCount", "connectionStatus"] {
             #expect(!serializedJSON.contains("\"\(runtimeField)\""))
@@ -59,7 +62,7 @@ struct ApplicationAcceptanceTests {
         let profile = try makeProfile()
         let encodedProfile = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile))
         let data = try JSONSerialization.data(withJSONObject: [
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "profiles": [encodedProfile, encodedProfile],
         ])
         let persistence = InMemoryProfilePersistence(data: data)
@@ -101,16 +104,104 @@ struct ApplicationAcceptanceTests {
         #expect(profile.localForwards.map(\.id) == [forwardID])
     }
 
+    @Test
+    func passwordIsStoredInCredentialStoreAndNeverProfileJSON() throws {
+        let persistence = InMemoryProfilePersistence()
+        let credentials = InMemoryCredentialStore()
+        let application = try EZTunnelApplication(
+            persistence: persistence,
+            credentialStore: credentials
+        )
+        let profile = try TunnelProfile(
+            sshHostname: "ssh.example.com",
+            sshUsername: "deploy",
+            authenticationMethod: .password,
+            destinationHost: "localhost",
+            localForwards: [
+                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
+            ]
+        )
+
+        try application.save(profile, credential: " secret with spaces ")
+
+        #expect(try credentials.credential(for: profile.id) == " secret with spaces ")
+        let json = String(decoding: try #require(persistence.data), as: UTF8.self)
+        #expect(!json.contains("secret with spaces"))
+    }
+
+    @Test
+    func schemaVersionTwoProfileMigratesToDirectSSHEndpoint() throws {
+        let profileID = UUID()
+        let forwardID = UUID()
+        let data = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 2,
+            "profiles": [[
+                "id": profileID.uuidString,
+                "displayName": "legacy-alias",
+                "sshHostAlias": "legacy-alias",
+                "listenAddress": "127.0.0.1",
+                "destinationHost": "localhost",
+                "localForwards": [[
+                    "id": forwardID.uuidString,
+                    "name": "Web",
+                    "listenPort": 8080,
+                    "destinationPort": 80,
+                ]],
+            ]],
+        ])
+
+        let application = try EZTunnelApplication(
+            persistence: InMemoryProfilePersistence(data: data)
+        )
+        let profile = try #require(application.profiles.first)
+
+        #expect(profile.sshHostname.rawValue == "legacy-alias")
+        #expect(profile.sshPort.rawValue == 22)
+        #expect(profile.authenticationMethod == .systemDefault)
+    }
+
+    @Test
+    func passwordAuthenticationRequiresAStoredOrSuppliedPassword() throws {
+        let application = try EZTunnelApplication(
+            persistence: InMemoryProfilePersistence(),
+            credentialStore: InMemoryCredentialStore()
+        )
+        let profile = try TunnelProfile(
+            sshHostname: "ssh.example.com",
+            authenticationMethod: .password,
+            destinationHost: "localhost",
+            localForwards: [
+                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
+            ]
+        )
+
+        #expect(throws: ProfileValidationError.passwordRequired) {
+            try application.save(profile)
+        }
+    }
+
     private func makeProfile() throws -> TunnelProfile {
         try TunnelProfile(
             displayName: "Production database",
-            sshHostAlias: "production",
+            sshHostname: "production.example.com",
+            sshUsername: "deploy",
             destinationHost: "database.internal",
             localForwards: [
                 LocalForward(name: "PostgreSQL", listenPort: 5432, destinationPort: 5432),
                 LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
             ]
         )
+    }
+}
+
+private final class InMemoryCredentialStore: SSHCredentialStore {
+    private var credentials = [UUID: String]()
+    func credential(for profileID: UUID) throws -> String? { credentials[profileID] }
+    func setCredential(_ credential: String, for profileID: UUID) throws {
+        credentials[profileID] = credential
+    }
+    func removeCredential(for profileID: UUID) throws {
+        credentials[profileID] = nil
     }
 }
 

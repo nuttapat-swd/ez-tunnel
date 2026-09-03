@@ -18,7 +18,8 @@ final class ApplicationModel: ObservableObject {
         do {
             return ApplicationModel(
                 application: try EZTunnelApplication(
-                    persistence: FileProfilePersistence.applicationSupport()
+                    persistence: FileProfilePersistence.applicationSupport(),
+                    credentialStore: KeychainSSHCredentialStore()
                 )
             )
         } catch {
@@ -29,9 +30,9 @@ final class ApplicationModel: ObservableObject {
         }
     }
 
-    func save(_ profile: TunnelProfile) -> Bool {
+    func save(_ profile: TunnelProfile, credential: String?) -> Bool {
         do {
-            try application.save(profile)
+            try application.save(profile, credential: credential)
             profiles = application.profiles
             errorMessage = nil
             return true

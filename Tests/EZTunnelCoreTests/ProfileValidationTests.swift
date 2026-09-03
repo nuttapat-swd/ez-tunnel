@@ -4,19 +4,20 @@ import Testing
 
 struct ProfileValidationTests {
     @Test
-    func sshHostAliasIsAlsoUsedAsTunnelProfileDisplayName() throws {
+    func sshHostnameIsAlsoUsedAsTunnelProfileDisplayName() throws {
         let localForward = try LocalForward(
             name: "Web", listenPort: 8080, destinationPort: 80
         )
 
         let profile = try TunnelProfile(
-            sshHostAlias: "development",
+            sshHostname: "development.example.com",
             destinationHost: "localhost",
             localForwards: [localForward]
         )
 
-        #expect(profile.displayName.rawValue == "development")
-        #expect(profile.sshHostAlias.rawValue == "development")
+        #expect(profile.displayName.rawValue == "development.example.com")
+        #expect(profile.sshHostname.rawValue == "development.example.com")
+        #expect(profile.sshPort.rawValue == 22)
     }
 
     @Test
@@ -24,8 +25,8 @@ struct ProfileValidationTests {
         #expect(throws: ProfileValidationError.missingValue("Display name")) {
             try makeProfile(displayName: " ")
         }
-        #expect(throws: ProfileValidationError.missingValue("SSH Host alias")) {
-            try makeProfile(sshHostAlias: "")
+        #expect(throws: ProfileValidationError.missingValue("SSH hostname")) {
+            try makeProfile(sshHostname: "")
         }
         #expect(throws: ProfileValidationError.missingValue("Local Forward name")) {
             try makeProfile(forwardName: "")
@@ -79,7 +80,7 @@ struct ProfileValidationTests {
     func tunnelProfileRequiresAtLeastOneLocalForward() {
         #expect(throws: ProfileValidationError.requiresLocalForward) {
             try TunnelProfile(
-                sshHostAlias: "development",
+                sshHostname: "development.example.com",
                 destinationHost: "localhost",
                 localForwards: []
             )
@@ -93,9 +94,23 @@ struct ProfileValidationTests {
 
         #expect(throws: ProfileValidationError.duplicateListenPort(8080)) {
             try TunnelProfile(
-                sshHostAlias: "development",
+                sshHostname: "development.example.com",
                 destinationHost: "localhost",
                 localForwards: [first, second]
+            )
+        }
+    }
+
+    @Test
+    func privateKeyAuthenticationRequiresAKeyPath() {
+        #expect(throws: ProfileValidationError.privateKeyPathRequired) {
+            try TunnelProfile(
+                sshHostname: "ssh.example.com",
+                authenticationMethod: .privateKey,
+                destinationHost: "localhost",
+                localForwards: [
+                    LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
+                ]
             )
         }
     }
@@ -108,7 +123,8 @@ struct ProfileValidationTests {
         let forward = try #require(forwards.first)
 
         #expect(json["displayName"] as? String == "Development")
-        #expect(json["sshHostAlias"] as? String == "development")
+        #expect(json["sshHostname"] as? String == "development.example.com")
+        #expect(json["sshPort"] as? Int == 22)
         #expect(json["listenAddress"] as? String == "127.0.0.1")
         #expect(json["destinationHost"] as? String == "localhost")
         #expect(forward["listenPort"] as? Int == 8080)
@@ -117,13 +133,13 @@ struct ProfileValidationTests {
     }
 
     private func makeProfile(
-        displayName: String = "Development", sshHostAlias: String = "development",
+        displayName: String = "Development", sshHostname: String = "development.example.com",
         forwardName: String = "Web", listenAddress: String = "127.0.0.1",
         listenPort: Int = 8080, destinationHost: String = "localhost",
         destinationPort: Int = 80
     ) throws -> TunnelProfile {
         try TunnelProfile(
-            displayName: displayName, sshHostAlias: sshHostAlias,
+            displayName: displayName, sshHostname: sshHostname,
             listenAddress: listenAddress,
             destinationHost: destinationHost,
             localForwards: [

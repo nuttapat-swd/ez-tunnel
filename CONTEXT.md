@@ -5,7 +5,7 @@ EZ Tunnel is a desktop application for defining and operating SSH tunnels that e
 ## Language
 
 **Tunnel Profile**:
-A saved definition with a stable identity and a case-insensitively unique display name that references exactly one **SSH Host** and contains one or more **Port Forwards** that are started and stopped together. Its Local Forwards share one loopback listen address and one destination host.
+A saved definition with a stable identity and a case-insensitively unique display name that contains exactly one **SSH Endpoint**, one authentication method, and one or more **Port Forwards** that are started and stopped together. Its Local Forwards share one loopback listen address and one destination host.
 _Avoid_: Config, connection
 
 **Auto-start Profile**:
@@ -41,15 +41,15 @@ The state of an **Active Profile** closing its Port Forwards and SSH connection 
 _Avoid_: Stopped
 
 **Configuration Changed**:
-A badge indicating that a **Tunnel Profile** or its external **SSH Host** definition changed after the profile connected. It does not replace the profile's primary state; the current connection remains active until the user restarts it or it reconnects with the saved changes.
+A badge indicating that an active **Tunnel Profile** changed after it connected. It does not replace the profile's primary state; the current connection remains active until the user restarts it or it reconnects with the saved changes.
 _Avoid_: Disconnected, stale profile
 
-**SSH Host**:
-A named SSH destination that supplies the connection identity and may resolve through an ordered chain of **Jump Hosts**. A Tunnel Profile references an SSH Host by its unique alias.
-_Avoid_: Server profile, connection
+**SSH Endpoint**:
+The hostname, SSH port, and optional username stored in a **Tunnel Profile**. It identifies the SSH server independently of OpenSSH configuration.
+_Avoid_: SSH Host alias, server profile, connection
 
 **Jump Host**:
-An intermediate SSH server used to reach either another Jump Host or an **SSH Host**. An SSH Host may resolve through multiple Jump Hosts in an ordered chain.
+An intermediate SSH server used to reach either another Jump Host or an **SSH Endpoint**. An SSH Endpoint may resolve through multiple Jump Hosts in an ordered chain.
 _Avoid_: Bastion, proxy server
 
 **Port Forward**:
@@ -70,7 +70,7 @@ _Avoid_: SOCKS tunnel
 
 > **User:** Start my production Tunnel Profile.
 >
-> **Support:** That resolves the profile's SSH Host through its Jump Host chain, then starts the Local Forward for PostgreSQL, Remote Forward for webhooks, and Dynamic Forward for SOCKS together.
+> **Support:** That connects to the profile's SSH Endpoint, then starts the Local Forward for PostgreSQL, Remote Forward for webhooks, and Dynamic Forward for SOCKS together.
 >
 > **User:** Which profiles return after I log in again?
 >
@@ -90,7 +90,7 @@ _Avoid_: SOCKS tunnel
 >
 > **User:** The profile says Configuration Changed. Is its tunnel down?
 >
-> **Support:** No. Its current connection stays active until you restart it or it reconnects using the updated SSH Host definition.
+> **Support:** No. Its current connection stays active until you restart it or it reconnects using the updated Tunnel Profile.
 >
 > **User:** Will it keep retrying this invalid port configuration?
 >
