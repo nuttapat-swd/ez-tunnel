@@ -11,7 +11,11 @@ struct ManagementView: View {
             List(model.profiles) { profile in
                 VStack(alignment: .leading) {
                     Text(profile.displayName.rawValue).font(.headline)
-                    Text(profile.sshHostAlias.rawValue).foregroundStyle(.secondary)
+                    Text(
+                        "\(profile.localForwards.count) "
+                            + (profile.localForwards.count == 1 ? "port" : "ports")
+                    )
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Tunnel Profiles")
@@ -19,20 +23,33 @@ struct ManagementView: View {
             Form {
                 Section("Tunnel Profile") {
                     TextField("SSH Host alias", text: $draft.sshHostAlias)
-                    Text("This is also the Tunnel Profile name.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Section("Local Forward") {
-                    TextField("Name", text: $draft.forwardName)
-                    Picker("Listen address", selection: $draft.listenAddress) {
+                    Picker("Local host", selection: $draft.listenAddress) {
                         Text("127.0.0.1").tag("127.0.0.1")
                         Text("::1").tag("::1")
                     }
-                    TextField("Listen port", text: $draft.listenPort)
                     TextField("Destination host", text: $draft.destinationHost)
-                    TextField("Destination port", text: $draft.destinationPort)
                 }
+
+                Section("Local Forwards") {
+                    ForEach($draft.localForwards) { $localForward in
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Name", text: $localForward.name)
+                            TextField("Listen port", text: $localForward.listenPort)
+                            TextField("Destination port", text: $localForward.destinationPort)
+                            if draft.localForwards.count > 1 {
+                                Button("Remove Port", role: .destructive) {
+                                    draft.removeLocalForward(id: localForward.id)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    Button("Add Port", systemImage: "plus") {
+                        draft.addLocalForward()
+                    }
+                }
+
                 if let errorMessage = model.errorMessage {
                     Text(errorMessage).foregroundStyle(.red)
                 }
@@ -55,9 +72,9 @@ struct ManagementView: View {
             DispatchQueue.main.async {
                 NSApplication.shared.setActivationPolicy(.regular)
                 NSApplication.shared.activate(ignoringOtherApps: true)
-                let window = NSApplication.shared.windows
-                    .first(where: { $0.title == "EZ Tunnel" })
-                window?.makeKeyAndOrderFront(nil)
+                NSApplication.shared.windows
+                    .first(where: { $0.title == "EZ Tunnel" })?
+                    .makeKeyAndOrderFront(nil)
             }
         }
     }
@@ -65,29 +82,46 @@ struct ManagementView: View {
 
 private struct ProfileDraft {
     private let profileID = UUID()
-    private let forwardID = UUID()
     var sshHostAlias = ""
-    var forwardName = ""
     var listenAddress = "127.0.0.1"
-    var listenPort = ""
     var destinationHost = ""
-    var destinationPort = ""
+    var localForwards = [LocalForwardDraft()]
+
+    mutating func addLocalForward() {
+        localForwards.append(LocalForwardDraft())
+    }
+
+    mutating func removeLocalForward(id: UUID) {
+        localForwards.removeAll { $0.id == id }
+    }
 
     func makeProfile() throws -> TunnelProfile {
-        guard let listenPort = Int(listenPort), let destinationPort = Int(destinationPort) else {
-            throw ProfileValidationError.invalidPort(field: "Port", value: 0)
-        }
+        let forwards = try localForwards.map { try $0.makeLocalForward() }
         return try TunnelProfile(
             id: profileID,
             sshHostAlias: sshHostAlias,
-            localForward: try LocalForward(
-                id: forwardID,
-                name: forwardName,
-                listenAddress: listenAddress,
-                listenPort: listenPort,
-                destinationHost: destinationHost,
-                destinationPort: destinationPort
-            )
+            listenAddress: listenAddress,
+            destinationHost: destinationHost,
+            localForwards: forwards
+        )
+    }
+}
+
+private struct LocalForwardDraft: Identifiable {
+    let id = UUID()
+    var name = ""
+    var listenPort = ""
+    var destinationPort = ""
+
+    func makeLocalForward() throws -> LocalForward {
+        guard let listenPort = Int(listenPort), let destinationPort = Int(destinationPort) else {
+            throw ProfileValidationError.invalidPort(field: "Port", value: 0)
+        }
+        return try LocalForward(
+            id: id,
+            name: name,
+            listenPort: listenPort,
+            destinationPort: destinationPort
         )
     }
 }

@@ -26,10 +26,10 @@ struct ApplicationAcceptanceTests {
             id: original.id,
             displayName: original.displayName.rawValue,
             sshHostAlias: original.sshHostAlias.rawValue,
-            localForward: LocalForward(
-                name: "Replacement", listenPort: 5432,
-                destinationHost: "database.internal", destinationPort: 5432
-            )
+            destinationHost: original.destinationHost.rawValue,
+            localForwards: [
+                LocalForward(name: "Replacement", listenPort: 5432, destinationPort: 5432),
+            ]
         )
 
         #expect(throws: ProfileStoreError.immutableLocalForwardChanged) {
@@ -47,7 +47,7 @@ struct ApplicationAcceptanceTests {
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let serializedJSON = String(decoding: data, as: UTF8.self)
 
-        #expect(object["schemaVersion"] as? Int == 1)
+        #expect(object["schemaVersion"] as? Int == 2)
         #expect(object["profiles"] != nil)
         for runtimeField in ["runtimeState", "pid", "retryCount", "connectionStatus"] {
             #expect(!serializedJSON.contains("\"\(runtimeField)\""))
@@ -59,7 +59,7 @@ struct ApplicationAcceptanceTests {
         let profile = try makeProfile()
         let encodedProfile = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile))
         let data = try JSONSerialization.data(withJSONObject: [
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "profiles": [encodedProfile, encodedProfile],
         ])
         let persistence = InMemoryProfilePersistence(data: data)
@@ -69,14 +69,47 @@ struct ApplicationAcceptanceTests {
         }
     }
 
+    @Test
+    func schemaVersionOneProfileMigratesToSharedHostsAndLocalForwards() throws {
+        let profileID = UUID()
+        let forwardID = UUID()
+        let data = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 1,
+            "profiles": [[
+                "id": profileID.uuidString,
+                "displayName": "legacy",
+                "sshHostAlias": "legacy",
+                "localForward": [
+                    "id": forwardID.uuidString,
+                    "name": "Web",
+                    "listenAddress": "127.0.0.1",
+                    "listenPort": 8080,
+                    "destinationHost": "localhost",
+                    "destinationPort": 80,
+                ],
+            ]],
+        ])
+
+        let application = try EZTunnelApplication(
+            persistence: InMemoryProfilePersistence(data: data)
+        )
+        let profile = try #require(application.profiles.first)
+
+        #expect(profile.id == profileID)
+        #expect(profile.listenAddress == .ipv4)
+        #expect(profile.destinationHost.rawValue == "localhost")
+        #expect(profile.localForwards.map(\.id) == [forwardID])
+    }
+
     private func makeProfile() throws -> TunnelProfile {
         try TunnelProfile(
             displayName: "Production database",
             sshHostAlias: "production",
-            localForward: LocalForward(
-                name: "PostgreSQL", listenPort: 5432,
-                destinationHost: "database.internal", destinationPort: 5432
-            )
+            destinationHost: "database.internal",
+            localForwards: [
+                LocalForward(name: "PostgreSQL", listenPort: 5432, destinationPort: 5432),
+                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
+            ]
         )
     }
 }

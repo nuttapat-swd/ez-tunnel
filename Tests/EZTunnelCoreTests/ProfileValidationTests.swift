@@ -6,13 +6,13 @@ struct ProfileValidationTests {
     @Test
     func sshHostAliasIsAlsoUsedAsTunnelProfileDisplayName() throws {
         let localForward = try LocalForward(
-            name: "Web", listenPort: 8080,
-            destinationHost: "localhost", destinationPort: 80
+            name: "Web", listenPort: 8080, destinationPort: 80
         )
 
         let profile = try TunnelProfile(
             sshHostAlias: "development",
-            localForward: localForward
+            destinationHost: "localhost",
+            localForwards: [localForward]
         )
 
         #expect(profile.displayName.rawValue == "development")
@@ -63,7 +63,7 @@ struct ProfileValidationTests {
 
     @Test
     func ipv4LoopbackIsTheDefaultListenAddress() throws {
-        #expect(try makeProfile().localForward.listenAddress == .ipv4)
+        #expect(try makeProfile().listenAddress == .ipv4)
     }
 
     @Test
@@ -76,15 +76,44 @@ struct ProfileValidationTests {
     }
 
     @Test
+    func tunnelProfileRequiresAtLeastOneLocalForward() {
+        #expect(throws: ProfileValidationError.requiresLocalForward) {
+            try TunnelProfile(
+                sshHostAlias: "development",
+                destinationHost: "localhost",
+                localForwards: []
+            )
+        }
+    }
+
+    @Test
+    func localForwardsCannotReuseAListenPort() throws {
+        let first = try LocalForward(name: "Web", listenPort: 8080, destinationPort: 80)
+        let second = try LocalForward(name: "Admin", listenPort: 8080, destinationPort: 8081)
+
+        #expect(throws: ProfileValidationError.duplicateListenPort(8080)) {
+            try TunnelProfile(
+                sshHostAlias: "development",
+                destinationHost: "localhost",
+                localForwards: [first, second]
+            )
+        }
+    }
+
+    @Test
     func validatedValuesPersistAsSchemaPrimitives() throws {
         let data = try JSONEncoder().encode(makeProfile())
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let forward = try #require(json["localForward"] as? [String: Any])
+        let forwards = try #require(json["localForwards"] as? [[String: Any]])
+        let forward = try #require(forwards.first)
 
         #expect(json["displayName"] as? String == "Development")
         #expect(json["sshHostAlias"] as? String == "development")
-        #expect(forward["listenAddress"] as? String == "127.0.0.1")
+        #expect(json["listenAddress"] as? String == "127.0.0.1")
+        #expect(json["destinationHost"] as? String == "localhost")
         #expect(forward["listenPort"] as? Int == 8080)
+        #expect(forward["listenAddress"] == nil)
+        #expect(forward["destinationHost"] == nil)
     }
 
     private func makeProfile(
@@ -95,10 +124,14 @@ struct ProfileValidationTests {
     ) throws -> TunnelProfile {
         try TunnelProfile(
             displayName: displayName, sshHostAlias: sshHostAlias,
-            localForward: LocalForward(
-                name: forwardName, listenAddress: listenAddress, listenPort: listenPort,
-                destinationHost: destinationHost, destinationPort: destinationPort
-            )
+            listenAddress: listenAddress,
+            destinationHost: destinationHost,
+            localForwards: [
+                LocalForward(
+                    name: forwardName, listenPort: listenPort,
+                    destinationPort: destinationPort
+                ),
+            ]
         )
     }
 }

@@ -37,28 +37,36 @@ public final class EZTunnelApplication {
             self.profiles = []
             return
         }
-        let document = try decoder.decode(ProfileDocument.self, from: data)
-        guard document.schemaVersion == ProfileDocument.currentSchemaVersion else {
-            throw ProfileStoreError.unsupportedSchemaVersion(document.schemaVersion)
+        let header = try decoder.decode(ProfileDocumentHeader.self, from: data)
+        let loadedProfiles: [TunnelProfile]
+        switch header.schemaVersion {
+        case 1:
+            loadedProfiles = try decoder.decode(LegacyProfileDocument.self, from: data)
+                .profiles.map { try $0.migrated() }
+        case ProfileDocument.currentSchemaVersion:
+            loadedProfiles = try decoder.decode(ProfileDocument.self, from: data).profiles
+        default:
+            throw ProfileStoreError.unsupportedSchemaVersion(header.schemaVersion)
         }
         var profileIDs = Set<UUID>()
-        for profile in document.profiles {
+        for profile in loadedProfiles {
             guard profileIDs.insert(profile.id).inserted else {
                 throw ProfileStoreError.duplicateTunnelProfileID(profile.id)
             }
-            try ProfileValidator.validate(profile, against: document.profiles)
+            try ProfileValidator.validate(profile, against: loadedProfiles)
         }
-        self.profiles = document.profiles
+        self.profiles = loadedProfiles
     }
 
     public func save(_ profile: TunnelProfile) throws {
         try ProfileValidator.validate(profile, against: profiles)
         var updatedProfiles = profiles
         if let index = updatedProfiles.firstIndex(where: { $0.id == profile.id }) {
-            let savedForward = updatedProfiles[index].localForward
-            guard savedForward.id == profile.localForward.id,
-                  savedForward.name == profile.localForward.name else {
-                throw ProfileStoreError.immutableLocalForwardChanged
+            for savedForward in updatedProfiles[index].localForwards {
+                guard let updatedForward = profile.localForwards.first(where: { $0.id == savedForward.id }),
+                      updatedForward.name == savedForward.name else {
+                    throw ProfileStoreError.immutableLocalForwardChanged
+                }
             }
             updatedProfiles[index] = profile
         } else {
@@ -72,7 +80,7 @@ public final class EZTunnelApplication {
 }
 
 private struct ProfileDocument: Codable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let schemaVersion: Int
     let profiles: [TunnelProfile]
@@ -81,4 +89,46 @@ private struct ProfileDocument: Codable {
         self.schemaVersion = Self.currentSchemaVersion
         self.profiles = profiles
     }
+}
+
+private struct ProfileDocumentHeader: Decodable {
+    let schemaVersion: Int
+}
+
+private struct LegacyProfileDocument: Decodable {
+    let profiles: [LegacyTunnelProfile]
+}
+
+private struct LegacyTunnelProfile: Decodable {
+    let id: UUID
+    let displayName: TunnelProfileName
+    let sshHostAlias: SSHHostAlias
+    let localForward: LegacyLocalForward
+
+    func migrated() throws -> TunnelProfile {
+        try TunnelProfile(
+            id: id,
+            displayName: displayName.rawValue,
+            sshHostAlias: sshHostAlias.rawValue,
+            listenAddress: localForward.listenAddress.rawValue,
+            destinationHost: localForward.destinationHost.rawValue,
+            localForwards: [
+                LocalForward(
+                    id: localForward.id,
+                    name: localForward.name.rawValue,
+                    listenPort: localForward.listenPort.rawValue,
+                    destinationPort: localForward.destinationPort.rawValue
+                ),
+            ]
+        )
+    }
+}
+
+private struct LegacyLocalForward: Decodable {
+    let id: UUID
+    let name: LocalForwardName
+    let listenAddress: LoopbackAddress
+    let listenPort: PortNumber
+    let destinationHost: DestinationHost
+    let destinationPort: PortNumber
 }
