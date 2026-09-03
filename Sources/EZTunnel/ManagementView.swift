@@ -1,0 +1,136 @@
+import SwiftUI
+import UniformTypeIdentifiers
+import EZTunnelAppSupport
+import EZTunnelCore
+
+struct ManagementView: View {
+    @ObservedObject var model: ApplicationModel
+    let windowPresenter: ManagementWindowPresenter
+    @State private var draft = TunnelProfileDraft()
+    @State private var selectedProfileID: UUID?
+    @State private var isChoosingPrivateKey = false
+
+    var body: some View {
+        NavigationSplitView {
+            List(model.profiles, selection: $selectedProfileID) { profile in
+                VStack(alignment: .leading) {
+                    Text(profile.displayName.rawValue).font(.headline)
+                    Text(
+                        "\(profile.localForwards.count) "
+                            + (profile.localForwards.count == 1
+                                ? "Local Forward" : "Local Forwards")
+                    )
+                        .foregroundStyle(.secondary)
+                }
+                .tag(profile.id)
+            }
+            .navigationTitle("Tunnel Profiles")
+            .toolbar {
+                ToolbarItem {
+                    Button("New Profile", systemImage: "plus") {
+                        selectedProfileID = nil
+                        draft = TunnelProfileDraft()
+                        model.errorMessage = nil
+                    }
+                }
+            }
+        } detail: {
+            Form {
+                Section("Tunnel Profile") {
+                    TextField("Profile name", text: $draft.displayName)
+                    TextField("SSH hostname", text: $draft.sshHostname)
+                    TextField("SSH port", text: $draft.sshPort)
+                    TextField("Username (optional)", text: $draft.sshUsername)
+                    Picker("Authentication", selection: $draft.authenticationMethod) {
+                        ForEach(SSHAuthenticationMethod.allCases, id: \.self) { method in
+                            Text(method.displayName).tag(method)
+                        }
+                    }
+                    if draft.authenticationMethod == .privateKey {
+                        TextField("Private key file", text: $draft.privateKeyPath)
+                        Button("Choose Private Key…") {
+                            isChoosingPrivateKey = true
+                        }
+                        SecureField("Private key passphrase (optional)", text: $draft.credential)
+                    }
+                    if draft.authenticationMethod == .password {
+                        SecureField("SSH password", text: $draft.credential)
+                        Text("Stored in macOS Keychain, never in profile JSON.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Picker("Local host", selection: $draft.listenAddress) {
+                        Text("127.0.0.1").tag("127.0.0.1")
+                        Text("::1").tag("::1")
+                    }
+                    TextField("Destination host", text: $draft.destinationHost)
+                }
+
+                Section("Local Forwards") {
+                    ForEach($draft.localForwards) { $localForward in
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Name", text: $localForward.name)
+                            TextField("Listen port", text: $localForward.listenPort)
+                            TextField("Destination port", text: $localForward.destinationPort)
+                            if draft.localForwards.count > 1 {
+                                Button("Remove Local Forward", role: .destructive) {
+                                    draft.removeLocalForward(id: localForward.id)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    Button("Add Local Forward", systemImage: "plus") {
+                        draft.addLocalForward()
+                    }
+                }
+
+                if let errorMessage = model.errorMessage {
+                    Text(errorMessage).foregroundStyle(.red)
+                }
+                Button("Save Tunnel Profile") {
+                    do {
+                        let profile = try draft.makeProfile()
+                        if model.save(profile, credential: draft.credential) {
+                            selectedProfileID = profile.id
+                            draft = TunnelProfileDraft(profile: profile)
+                        }
+                    } catch {
+                        model.errorMessage = error.localizedDescription
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .formStyle(.grouped)
+            .navigationTitle(selectedProfileID == nil ? "New Tunnel Profile" : "Edit Tunnel Profile")
+            .padding()
+        }
+        .fileImporter(
+            isPresented: $isChoosingPrivateKey,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                draft.privateKeyPath = url.path
+            }
+        }
+        .onChange(of: selectedProfileID) { profileID in
+            guard let selectedDraft = TunnelProfileSelection.draft(
+                selecting: profileID,
+                from: model.profiles
+            ) else {
+                return
+            }
+            draft = selectedDraft
+            model.errorMessage = nil
+        }
+        .onAppear {
+            if selectedProfileID == nil, let firstProfile = model.profiles.first {
+                selectedProfileID = firstProfile.id
+                draft = TunnelProfileDraft(profile: firstProfile)
+            }
+            windowPresenter.present {}
+        }
+    }
+}
