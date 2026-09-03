@@ -15,6 +15,8 @@ struct ManagementView: View {
             List(model.profiles, selection: $selectedProfileID) { profile in
                 VStack(alignment: .leading) {
                     Text(profile.displayName.rawValue).font(.headline)
+                    Text(model.state(of: profile.id).displayName)
+                        .foregroundStyle(.secondary)
                     Text(
                         "\(profile.localForwards.count) "
                             + (profile.localForwards.count == 1
@@ -101,6 +103,13 @@ struct ManagementView: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
+
+                if let selectedProfileID {
+                    Button("\(model.actionTitle(profileID: selectedProfileID)) Tunnel Profile") {
+                        model.toggle(profileID: selectedProfileID)
+                    }
+                    .disabled(!model.canToggle(profileID: selectedProfileID))
+                }
             }
             .formStyle(.grouped)
             .navigationTitle(selectedProfileID == nil ? "New Tunnel Profile" : "Edit Tunnel Profile")
@@ -132,5 +141,9 @@ struct ManagementView: View {
             }
             windowPresenter.present {}
         }
+        .onDisappear {
+            model.managementWindowDidClose()
+        }
     }
+
 }
