@@ -64,6 +64,50 @@ struct ProfileEditingAcceptanceTests {
         #expect(visibleDraft.localForwards.map(\.listenPort) == ["8081", "5432"])
         #expect(visibleDraft.localForwards.map(\.destinationPort) == ["8080", "5432"])
     }
+
+    @Test
+    func editorDraftPreservesEveryPortForwardModeAndItsModeSpecificFields() throws {
+        let localID = UUID()
+        let remoteID = UUID()
+        let dynamicID = UUID()
+        let profile = try TunnelProfile(
+            displayName: "Complete",
+            sshHostname: "ssh.example.com",
+            portForwards: [
+                PortForward.local(
+                    id: localID,
+                    name: "Database",
+                    listenPort: 15432,
+                    destinationHost: "database.internal",
+                    destinationPort: 5432
+                ),
+                PortForward.remote(
+                    id: remoteID,
+                    name: "Webhook",
+                    listenAddress: "::1",
+                    listenPort: 19000,
+                    destinationHost: "127.0.0.1",
+                    destinationPort: 9000
+                ),
+                PortForward.dynamic(
+                    id: dynamicID,
+                    name: "SOCKS",
+                    listenPort: 1080
+                ),
+            ]
+        )
+
+        let draft = TunnelProfileDraft(profile: profile)
+        let rebuilt = try draft.makeProfile()
+
+        #expect(rebuilt == profile)
+        #expect(draft.localForwards.map(\.id) == [localID])
+        #expect(draft.remoteForwards.map(\.id) == [remoteID])
+        #expect(draft.remoteForwards.map(\.listenAddress) == ["::1"])
+        #expect(draft.remoteForwards.map(\.destinationHost) == ["127.0.0.1"])
+        #expect(draft.dynamicForwards.map(\.id) == [dynamicID])
+        #expect(draft.dynamicForwards.map(\.listenPort) == ["1080"])
+    }
 }
 
 private final class EditingInMemoryPersistence: ProfilePersistence {

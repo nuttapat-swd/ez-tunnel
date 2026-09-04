@@ -13,6 +13,8 @@ public struct TunnelProfileDraft {
     public var listenAddress: String
     public var destinationHost: String
     public var localForwards: [LocalForwardDraft]
+    public var remoteForwards: [RemoteForwardDraft]
+    public var dynamicForwards: [DynamicForwardDraft]
 
     public init(profileID: UUID = UUID()) {
         self.profileID = profileID
@@ -26,6 +28,8 @@ public struct TunnelProfileDraft {
         self.listenAddress = "127.0.0.1"
         self.destinationHost = ""
         self.localForwards = [LocalForwardDraft()]
+        self.remoteForwards = []
+        self.dynamicForwards = []
     }
 
     public init(profile: TunnelProfile) {
@@ -40,6 +44,8 @@ public struct TunnelProfileDraft {
         self.listenAddress = profile.listenAddress.rawValue
         self.destinationHost = profile.destinationHost.rawValue
         self.localForwards = profile.localForwards.map(LocalForwardDraft.init)
+        self.remoteForwards = profile.remoteForwards.map(RemoteForwardDraft.init)
+        self.dynamicForwards = profile.dynamicForwards.map(DynamicForwardDraft.init)
     }
 
     public mutating func addLocalForward() {
@@ -50,10 +56,39 @@ public struct TunnelProfileDraft {
         localForwards.removeAll { $0.id == id }
     }
 
+    public mutating func addRemoteForward() {
+        remoteForwards.append(RemoteForwardDraft())
+    }
+
+    public mutating func removeRemoteForward(id: UUID) {
+        remoteForwards.removeAll { $0.id == id }
+    }
+
+    public mutating func addDynamicForward() {
+        dynamicForwards.append(DynamicForwardDraft())
+    }
+
+    public mutating func removeDynamicForward(id: UUID) {
+        dynamicForwards.removeAll { $0.id == id }
+    }
+
     public func makeProfile() throws -> TunnelProfile {
         guard let sshPort = Int(sshPort) else {
             throw ProfileValidationError.invalidPort(field: "SSH port", value: 0)
         }
+        let local = try localForwards.map {
+            try PortForward.local(
+                id: $0.id,
+                name: $0.name,
+                listenAddress: listenAddress,
+                listenPort: $0.parsedListenPort(),
+                destinationHost: destinationHost.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty ? "127.0.0.1" : destinationHost,
+                destinationPort: $0.parsedDestinationPort()
+            )
+        }
+        let remote = try remoteForwards.map { try $0.makePortForward() }
+        let dynamic = try dynamicForwards.map { try $0.makePortForward() }
         return try TunnelProfile(
             id: profileID,
             displayName: displayName,
@@ -62,9 +97,7 @@ public struct TunnelProfileDraft {
             sshUsername: sshUsername,
             authenticationMethod: authenticationMethod,
             privateKeyPath: privateKeyPath,
-            listenAddress: listenAddress,
-            destinationHost: destinationHost,
-            localForwards: try localForwards.map { try $0.makeLocalForward() }
+            portForwards: local + remote + dynamic
         )
     }
 }
@@ -98,6 +131,95 @@ public struct LocalForwardDraft: Identifiable {
             name: name,
             listenPort: listenPort,
             destinationPort: destinationPort
+        )
+    }
+
+
+    fileprivate func parsedListenPort() throws -> Int {
+        guard let listenPort = Int(listenPort) else {
+            throw ProfileValidationError.invalidPort(field: "Listen port", value: 0)
+        }
+        return listenPort
+    }
+
+    fileprivate func parsedDestinationPort() throws -> Int {
+        guard let destinationPort = Int(destinationPort) else {
+            throw ProfileValidationError.invalidPort(field: "Destination port", value: 0)
+        }
+        return destinationPort
+    }
+}
+
+public struct RemoteForwardDraft: Identifiable {
+    public let id: UUID
+    public var name: String
+    public var listenAddress: String
+    public var listenPort: String
+    public var destinationHost: String
+    public var destinationPort: String
+
+    public init(id: UUID = UUID()) {
+        self.id = id
+        self.name = ""
+        self.listenAddress = "127.0.0.1"
+        self.listenPort = ""
+        self.destinationHost = "127.0.0.1"
+        self.destinationPort = ""
+    }
+
+    public init(_ remoteForward: RemoteForward) {
+        self.id = remoteForward.id
+        self.name = remoteForward.name.rawValue
+        self.listenAddress = remoteForward.listenAddress.rawValue
+        self.listenPort = String(remoteForward.listenPort.rawValue)
+        self.destinationHost = remoteForward.destinationHost.rawValue
+        self.destinationPort = String(remoteForward.destinationPort.rawValue)
+    }
+
+    public func makePortForward() throws -> PortForward {
+        guard let listenPort = Int(listenPort), let destinationPort = Int(destinationPort) else {
+            throw ProfileValidationError.invalidPort(field: "Port", value: 0)
+        }
+        return try .remote(
+            id: id,
+            name: name,
+            listenAddress: listenAddress,
+            listenPort: listenPort,
+            destinationHost: destinationHost,
+            destinationPort: destinationPort
+        )
+    }
+}
+
+public struct DynamicForwardDraft: Identifiable {
+    public let id: UUID
+    public var name: String
+    public var listenAddress: String
+    public var listenPort: String
+
+    public init(id: UUID = UUID()) {
+        self.id = id
+        self.name = ""
+        self.listenAddress = "127.0.0.1"
+        self.listenPort = ""
+    }
+
+    public init(_ dynamicForward: DynamicForward) {
+        self.id = dynamicForward.id
+        self.name = dynamicForward.name.rawValue
+        self.listenAddress = dynamicForward.listenAddress.rawValue
+        self.listenPort = String(dynamicForward.listenPort.rawValue)
+    }
+
+    public func makePortForward() throws -> PortForward {
+        guard let listenPort = Int(listenPort) else {
+            throw ProfileValidationError.invalidPort(field: "Listen port", value: 0)
+        }
+        return try .dynamic(
+            id: id,
+            name: name,
+            listenAddress: listenAddress,
+            listenPort: listenPort
         )
     }
 }

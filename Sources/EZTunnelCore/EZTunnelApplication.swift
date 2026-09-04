@@ -56,6 +56,9 @@ public final class EZTunnelApplication {
         case 2:
             loadedProfiles = try decoder.decode(LegacyVersionTwoProfileDocument.self, from: data)
                 .profiles.map { try $0.migrated() }
+        case 3:
+            loadedProfiles = try decoder.decode(LegacyVersionThreeProfileDocument.self, from: data)
+                .profiles.map { try $0.migrated() }
         case ProfileDocument.currentSchemaVersion:
             loadedProfiles = try decoder.decode(ProfileDocument.self, from: data).profiles
         default:
@@ -237,7 +240,7 @@ private extension SSHAuthenticationMethod {
 }
 
 private struct ProfileDocument: Codable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     let schemaVersion: Int
     let profiles: [TunnelProfile]
@@ -283,6 +286,38 @@ private struct LegacyTunnelProfile: Decodable {
 
 private struct LegacyVersionTwoProfileDocument: Decodable {
     let profiles: [LegacyVersionTwoTunnelProfile]
+}
+
+private struct LegacyVersionThreeProfileDocument: Decodable {
+    let profiles: [LegacyVersionThreeTunnelProfile]
+}
+
+private struct LegacyVersionThreeTunnelProfile: Decodable {
+    let id: UUID
+    let displayName: TunnelProfileName
+    let sshHostname: SSHHostname
+    let sshPort: PortNumber
+    let sshUsername: SSHUsername?
+    let authenticationMethod: SSHAuthenticationMethod
+    let privateKeyPath: String?
+    let listenAddress: LoopbackAddress
+    let destinationHost: DestinationHost
+    let localForwards: [LocalForward]
+
+    func migrated() throws -> TunnelProfile {
+        try TunnelProfile(
+            id: id,
+            displayName: displayName.rawValue,
+            sshHostname: sshHostname.rawValue,
+            sshPort: sshPort.rawValue,
+            sshUsername: sshUsername?.rawValue,
+            authenticationMethod: authenticationMethod,
+            privateKeyPath: privateKeyPath,
+            listenAddress: listenAddress.rawValue,
+            destinationHost: destinationHost.rawValue,
+            localForwards: localForwards
+        )
+    }
 }
 
 private struct LegacyVersionTwoTunnelProfile: Decodable {

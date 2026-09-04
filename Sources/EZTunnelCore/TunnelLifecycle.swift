@@ -39,15 +39,17 @@ public struct SSHProcessRequest: Equatable, Sendable {
     public let profileID: UUID
     public let executableURL: URL
     public let arguments: [String]
-    let localForwards: [SSHLocalForwardDescriptor]
+    let portForwards: [SSHPortForwardDescriptor]
 
     init(profile: TunnelProfile, allowsInteraction: Bool) {
         self.profileID = profile.id
         self.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        self.localForwards = profile.localForwards.map {
-            SSHLocalForwardDescriptor(
+        self.portForwards = profile.portForwards.map {
+            SSHPortForwardDescriptor(
+                id: $0.id,
                 name: $0.name.rawValue,
-                listenAddress: profile.listenAddress.rawValue,
+                mode: $0.mode,
+                listenAddress: $0.listenAddress.rawValue,
                 listenPort: $0.listenPort.rawValue
             )
         }
@@ -70,14 +72,29 @@ public struct SSHProcessRequest: Equatable, Sendable {
         if profile.authenticationMethod == .privateKey, let path = profile.privateKeyPath {
             arguments += ["-o", "IdentitiesOnly=yes", "-i", path]
         }
-        for forward in profile.localForwards {
-            let listenAddress = Self.forwardingHost(profile.listenAddress.rawValue)
-            let destinationHost = Self.forwardingHost(profile.destinationHost.rawValue)
-            arguments += [
-                "-L",
-                "\(listenAddress):\(forward.listenPort.rawValue):"
-                    + "\(destinationHost):\(forward.destinationPort.rawValue)",
-            ]
+        for forward in profile.portForwards {
+            let listenAddress = Self.forwardingHost(forward.listenAddress.rawValue)
+            switch forward {
+            case .localForward(let local, _, let destinationHost):
+                arguments += [
+                    "-L",
+                    "\(listenAddress):\(local.listenPort.rawValue):"
+                        + "\(Self.forwardingHost(destinationHost.rawValue)):"
+                        + "\(local.destinationPort.rawValue)",
+                ]
+            case .remoteForward(let remote):
+                arguments += [
+                    "-R",
+                    "\(listenAddress):\(remote.listenPort.rawValue):"
+                        + "\(Self.forwardingHost(remote.destinationHost.rawValue)):"
+                        + "\(remote.destinationPort.rawValue)",
+                ]
+            case .dynamicForward(let dynamic):
+                arguments += [
+                    "-D",
+                    "\(listenAddress):\(dynamic.listenPort.rawValue)",
+                ]
+            }
         }
         arguments += ["--", profile.sshHostname.rawValue]
         self.arguments = arguments
@@ -88,10 +105,53 @@ public struct SSHProcessRequest: Equatable, Sendable {
     }
 }
 
-struct SSHLocalForwardDescriptor: Equatable, Sendable {
+struct SSHPortForwardDescriptor: Equatable, Sendable {
+    let id: UUID
     let name: String
+    let mode: PortForwardMode
     let listenAddress: String
     let listenPort: Int
+}
+
+struct SSHProcessReadinessTracker: Sendable {
+    private let portForwards: [SSHPortForwardDescriptor]
+    private var readyPortForwardIDs = Set<UUID>()
+    private var sessionEstablished = false
+
+    init(portForwards: [SSHPortForwardDescriptor]) {
+        self.portForwards = portForwards
+    }
+
+    mutating func receive(_ diagnostic: String) -> Bool {
+        if diagnostic.contains("Entering interactive session") {
+            sessionEstablished = true
+        }
+        for portForward in portForwards where isReady(portForward, in: diagnostic) {
+            readyPortForwardIDs.insert(portForward.id)
+        }
+        return sessionEstablished && readyPortForwardIDs.count == portForwards.count
+    }
+
+    private func isReady(
+        _ portForward: SSHPortForwardDescriptor,
+        in diagnostic: String
+    ) -> Bool {
+        switch portForward.mode {
+        case .local, .dynamic:
+            diagnostic.contains(
+                "Local forwarding listening on \(portForward.listenAddress) "
+                    + "port \(portForward.listenPort)"
+            )
+        case .remote:
+            diagnostic.contains(
+                "remote forward success for: listen \(portForward.listenAddress):"
+                    + "\(portForward.listenPort)"
+            ) || diagnostic.contains(
+                "remote forward success for: listen [\(portForward.listenAddress)]:"
+                    + "\(portForward.listenPort)"
+            )
+        }
+    }
 }
 
 public enum SSHProcessFailure: Equatable, Sendable {
@@ -164,6 +224,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         let process: Process
         let standardError: Pipe
         let request: SSHProcessRequest
+        var readinessTracker: SSHProcessReadinessTracker
         var diagnosticOutput = ""
         var readyReported = false
 
@@ -171,6 +232,9 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             self.process = process
             self.standardError = standardError
             self.request = request
+            self.readinessTracker = SSHProcessReadinessTracker(
+                portForwards: request.portForwards
+            )
         }
     }
 
@@ -251,7 +315,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             )
         }
         if !ownedProcess.readyReported,
-           ownedProcess.diagnosticOutput.contains("Entering interactive session") {
+           ownedProcess.readinessTracker.receive(ownedProcess.diagnosticOutput) {
             ownedProcess.readyReported = true
             eventHandler(.ready)
         }
@@ -268,7 +332,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         let message = diagnosticMessage(
             from: diagnostic,
             status: status,
-            localForwards: ownedProcess.request.localForwards
+            portForwards: ownedProcess.request.portForwards
         )
         eventHandler(.failed(classifyFailure(diagnostic: diagnostic, message: message)))
     }
@@ -276,15 +340,15 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
     private func diagnosticMessage(
         from diagnostic: String,
         status: Int32,
-        localForwards: [SSHLocalForwardDescriptor]
+        portForwards: [SSHPortForwardDescriptor]
     ) -> String {
         if diagnostic.localizedCaseInsensitiveContains("Address already in use"),
-           let forward = localForwards.first(where: {
+           let forward = portForwards.first(where: {
                diagnostic.contains("port: \($0.listenPort)")
                    || diagnostic.contains("]: \($0.listenPort)")
                    || diagnostic.contains("]:\($0.listenPort)")
            }) {
-            return "Local Forward \(forward.name) could not bind to "
+            return "\(forward.mode.displayName) Forward \(forward.name) could not bind to "
                 + "\(forward.listenAddress):\(forward.listenPort)."
         }
         let lines = diagnostic.split(separator: "\n", omittingEmptySubsequences: true)

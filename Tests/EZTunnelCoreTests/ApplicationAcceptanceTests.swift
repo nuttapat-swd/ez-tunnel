@@ -25,11 +25,59 @@ struct ApplicationAcceptanceTests {
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let serializedJSON = String(decoding: data, as: UTF8.self)
 
-        #expect(object["schemaVersion"] as? Int == 3)
+        #expect(object["schemaVersion"] as? Int == 4)
         #expect(object["profiles"] != nil)
         for runtimeField in ["runtimeState", "pid", "retryCount", "connectionStatus"] {
             #expect(!serializedJSON.contains("\"\(runtimeField)\""))
         }
+    }
+
+    @Test
+    func everyPortForwardModePersistsAndRestoresWithStableIdentity() throws {
+        let persistence = InMemoryProfilePersistence()
+        let application = try EZTunnelApplication(persistence: persistence)
+        let ids = [UUID(), UUID(), UUID()]
+        let profile = try TunnelProfile(
+            displayName: "Complete",
+            sshHostname: "ssh.example.com",
+            portForwards: [
+                PortForward.local(
+                    id: ids[0], name: "Web", listenPort: 8080,
+                    destinationHost: "web.internal", destinationPort: 80
+                ),
+                PortForward.remote(
+                    id: ids[1], name: "Webhook", listenAddress: "::1",
+                    listenPort: 9000, destinationHost: "127.0.0.1", destinationPort: 9001
+                ),
+                PortForward.dynamic(id: ids[2], name: "SOCKS", listenPort: 1080),
+            ]
+        )
+
+        try application.save(profile)
+        let relaunched = try EZTunnelApplication(persistence: persistence)
+
+        #expect(relaunched.profiles == [profile])
+        #expect(relaunched.profiles[0].portForwards.map(\.id) == ids)
+        #expect(relaunched.profiles[0].portForwards.map(\.mode) == [.local, .remote, .dynamic])
+    }
+
+    @Test
+    func schemaVersionThreeLocalForwardsMigrateToCurrentPortForwards() throws {
+        let profile = try makeProfile()
+        let encodedProfile = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile))
+        var legacyProfile = try #require(encodedProfile as? [String: Any])
+        legacyProfile.removeValue(forKey: "remoteForwards")
+        legacyProfile.removeValue(forKey: "dynamicForwards")
+        let data = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 3,
+            "profiles": [legacyProfile],
+        ])
+
+        let application = try EZTunnelApplication(
+            persistence: InMemoryProfilePersistence(data: data)
+        )
+
+        #expect(application.profiles.first?.portForwards.map(\.mode) == [.local, .local])
     }
 
     @Test
