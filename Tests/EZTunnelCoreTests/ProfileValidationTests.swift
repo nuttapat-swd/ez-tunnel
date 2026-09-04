@@ -31,9 +31,25 @@ struct ProfileValidationTests {
         #expect(throws: ProfileValidationError.missingValue("Local Forward name")) {
             try makeProfile(forwardName: "")
         }
-        #expect(throws: ProfileValidationError.missingValue("Destination host")) {
-            try makeProfile(destinationHost: "")
-        }
+    }
+
+    @Test(arguments: ["", "   ", "\n"])
+    func blankDestinationHostDefaultsToIPv4Loopback(destinationHost: String) throws {
+        let profile = try makeProfile(destinationHost: destinationHost)
+
+        #expect(profile.destinationHost.rawValue == "127.0.0.1")
+    }
+
+    @Test
+    func omittedDestinationHostDefaultsToIPv4Loopback() throws {
+        let profile = try TunnelProfile(
+            sshHostname: "development.example.com",
+            localForwards: [
+                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
+            ]
+        )
+
+        #expect(profile.destinationHost.rawValue == "127.0.0.1")
     }
 
     @Test(arguments: [0, -1, 65_536])

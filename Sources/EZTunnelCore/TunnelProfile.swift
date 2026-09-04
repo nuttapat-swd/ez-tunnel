@@ -35,7 +35,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
         authenticationMethod: SSHAuthenticationMethod = .systemDefault,
         privateKeyPath: String? = nil,
         listenAddress: String = "127.0.0.1",
-        destinationHost: String,
+        destinationHost: String = "127.0.0.1",
         localForwards: [LocalForward]
     ) throws {
         self.id = id
@@ -50,7 +50,11 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
         let normalizedKeyPath = privateKeyPath?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.privateKeyPath = normalizedKeyPath?.isEmpty == false ? normalizedKeyPath : nil
         self.listenAddress = try LoopbackAddress(validating: listenAddress)
-        self.destinationHost = try DestinationHost(rawValue: destinationHost)
+        let normalizedDestinationHost = destinationHost
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.destinationHost = try DestinationHost(
+            rawValue: normalizedDestinationHost.isEmpty ? "127.0.0.1" : destinationHost
+        )
         self.localForwards = localForwards
         try ProfileValidator.validate(self)
     }

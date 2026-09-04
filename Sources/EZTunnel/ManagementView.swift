@@ -65,7 +65,11 @@ struct ManagementView: View {
                         Text("127.0.0.1").tag("127.0.0.1")
                         Text("::1").tag("::1")
                     }
-                    TextField("Destination host", text: $draft.destinationHost)
+                    TextField(
+                        "Destination host (optional)",
+                        text: $draft.destinationHost,
+                        prompt: Text("127.0.0.1")
+                    )
                 }
 
                 Section("Local Forwards") {
