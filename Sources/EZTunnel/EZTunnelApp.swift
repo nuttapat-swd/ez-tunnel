@@ -3,7 +3,8 @@ import EZTunnelAppSupport
 
 @main
 struct EZTunnelApp: App {
-    @StateObject private var model = ApplicationModel.makeDefault()
+    @StateObject private var model = AppDependencies.model
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private let windowPresenter = ManagementWindowPresenter(
         operatingSystem: MacOSManagementWindowOperatingSystem()
     )
@@ -18,5 +19,17 @@ struct EZTunnelApp: App {
             ManagementView(model: model, windowPresenter: windowPresenter)
                 .frame(minWidth: 680, minHeight: 440)
         }
+    }
+}
+
+@MainActor
+private enum AppDependencies {
+    static let model = ApplicationModel.makeDefault()
+}
+
+@MainActor
+private final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        AppDependencies.model.quit()
     }
 }

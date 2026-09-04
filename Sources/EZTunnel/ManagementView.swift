@@ -15,6 +15,8 @@ struct ManagementView: View {
             List(model.profiles, selection: $selectedProfileID) { profile in
                 VStack(alignment: .leading) {
                     Text(profile.displayName.rawValue).font(.headline)
+                    Text(model.state(of: profile.id).displayName)
+                        .foregroundStyle(.secondary)
                     Text(
                         "\(profile.localForwards.count) "
                             + (profile.localForwards.count == 1
@@ -63,7 +65,11 @@ struct ManagementView: View {
                         Text("127.0.0.1").tag("127.0.0.1")
                         Text("::1").tag("::1")
                     }
-                    TextField("Destination host", text: $draft.destinationHost)
+                    TextField(
+                        "Destination host (optional)",
+                        text: $draft.destinationHost,
+                        prompt: Text("127.0.0.1")
+                    )
                 }
 
                 Section("Local Forwards") {
@@ -101,6 +107,13 @@ struct ManagementView: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
+
+                if let selectedProfileID {
+                    Button("\(model.actionTitle(profileID: selectedProfileID)) Tunnel Profile") {
+                        model.toggle(profileID: selectedProfileID)
+                    }
+                    .disabled(!model.canToggle(profileID: selectedProfileID))
+                }
             }
             .formStyle(.grouped)
             .navigationTitle(selectedProfileID == nil ? "New Tunnel Profile" : "Edit Tunnel Profile")
@@ -132,5 +145,9 @@ struct ManagementView: View {
             }
             windowPresenter.present {}
         }
+        .onDisappear {
+            model.managementWindowDidClose()
+        }
     }
+
 }

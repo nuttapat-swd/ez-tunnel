@@ -17,18 +17,28 @@ public enum ProfileStoreError: Error, Equatable, LocalizedError, Sendable {
 @MainActor
 public final class EZTunnelApplication {
     public private(set) var profiles: [TunnelProfile]
+    public var stateDidChange: (@MainActor (UUID, TunnelLifecycleState) -> Void)?
 
     private let persistence: any ProfilePersistence
     private let credentialStore: any SSHCredentialStore
+    private let processSupervisor: any SSHProcessSupervising
+    private let retryScheduler: any TunnelRetryScheduling
+    private var lifecycleStates = [UUID: TunnelLifecycleState]()
+    private var retryAttempts = [UUID: Int]()
+    private var scheduledRetries = [UUID: UUID]()
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(
         persistence: any ProfilePersistence,
-        credentialStore: any SSHCredentialStore = UnavailableSSHCredentialStore()
+        credentialStore: any SSHCredentialStore = UnavailableSSHCredentialStore(),
+        processSupervisor: (any SSHProcessSupervising)? = nil,
+        retryScheduler: (any TunnelRetryScheduling)? = nil
     ) throws {
         self.persistence = persistence
         self.credentialStore = credentialStore
+        self.processSupervisor = processSupervisor ?? SystemOpenSSHProcessSupervisor()
+        self.retryScheduler = retryScheduler ?? SystemTunnelRetryScheduler()
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
         self.encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -109,6 +119,101 @@ public final class EZTunnelApplication {
             throw error
         }
         profiles = updatedProfiles
+    }
+
+    public func state(of profileID: UUID) -> TunnelLifecycleState {
+        lifecycleStates[profileID] ?? .stopped
+    }
+
+    public func start(profileID: UUID) throws {
+        guard let profile = profiles.first(where: { $0.id == profileID }) else {
+            throw TunnelLifecycleError.profileNotFound(profileID)
+        }
+        guard state(of: profileID) == .stopped else {
+            throw TunnelLifecycleError.profileAlreadyActive(profileID)
+        }
+        transition(profileID, to: .connecting)
+        do {
+            try startProcess(for: profile, allowsInteraction: true)
+        } catch {
+            transition(profileID, to: .needsAttention(error.localizedDescription))
+            throw error
+        }
+    }
+
+    public func stop(profileID: UUID) {
+        guard state(of: profileID) != .stopped else { return }
+        transition(profileID, to: .stopping)
+        cancelRetry(for: profileID)
+        processSupervisor.stop(profileID: profileID)
+        retryAttempts[profileID] = nil
+        transition(profileID, to: .stopped)
+    }
+
+    public func quit() {
+        for profileID in lifecycleStates.compactMap({ $0.value == .stopped ? nil : $0.key }) {
+            stop(profileID: profileID)
+        }
+    }
+
+    public func managementWindowDidClose() {
+        // Active Profile intent belongs to the menu-bar application, not its window.
+    }
+
+    private func handle(_ event: SSHProcessEvent, for profileID: UUID) {
+        guard state(of: profileID) != .stopped else { return }
+        switch event {
+        case .ready:
+            retryAttempts[profileID] = nil
+            transition(profileID, to: .connected)
+        case .failed(.needsAttention(let message)):
+            cancelRetry(for: profileID)
+            transition(profileID, to: .needsAttention(message))
+        case .failed(.temporary):
+            transition(profileID, to: .reconnecting)
+            scheduleRetry(for: profileID)
+        }
+    }
+
+    private func startProcess(
+        for profile: TunnelProfile,
+        allowsInteraction: Bool
+    ) throws {
+        try processSupervisor.start(
+            SSHProcessRequest(profile: profile, allowsInteraction: allowsInteraction)
+        ) { [weak self] event in
+            self?.handle(event, for: profile.id)
+        }
+    }
+
+    private func scheduleRetry(for profileID: UUID) {
+        cancelRetry(for: profileID)
+        let backoff: [TimeInterval] = [1, 2, 5, 10, 30]
+        let attempt = retryAttempts[profileID, default: 0]
+        retryAttempts[profileID] = attempt + 1
+        let delay = backoff[min(attempt, backoff.count - 1)]
+        scheduledRetries[profileID] = retryScheduler.schedule(after: delay) { [weak self] in
+            guard let self, self.state(of: profileID) == .reconnecting,
+                  let profile = self.profiles.first(where: { $0.id == profileID }) else {
+                return
+            }
+            self.scheduledRetries[profileID] = nil
+            do {
+                try self.startProcess(for: profile, allowsInteraction: false)
+            } catch {
+                self.transition(profileID, to: .needsAttention(error.localizedDescription))
+            }
+        }
+    }
+
+    private func cancelRetry(for profileID: UUID) {
+        guard let retryID = scheduledRetries.removeValue(forKey: profileID) else { return }
+        retryScheduler.cancel(retryID)
+    }
+
+    private func transition(_ profileID: UUID, to state: TunnelLifecycleState) {
+        lifecycleStates[profileID] = state
+        stateDidChange?(profileID, state)
     }
 
     private func setCredential(_ credential: String?, for key: SSHCredentialKey) throws {
