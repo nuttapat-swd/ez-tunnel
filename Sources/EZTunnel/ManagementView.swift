@@ -61,18 +61,20 @@ struct ManagementView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Picker("Local host", selection: $draft.listenAddress) {
-                        Text("127.0.0.1").tag("127.0.0.1")
-                        Text("::1").tag("::1")
-                    }
-                    TextField(
-                        "Destination host (optional)",
-                        text: $draft.destinationHost,
-                        prompt: Text("127.0.0.1")
-                    )
                 }
 
                 Section("Local Forwards") {
+                    if !draft.localForwards.isEmpty {
+                        Picker("Local listen address", selection: $draft.listenAddress) {
+                            Text("127.0.0.1").tag("127.0.0.1")
+                            Text("::1").tag("::1")
+                        }
+                        TextField(
+                            "Destination host (optional)",
+                            text: $draft.destinationHost,
+                            prompt: Text("127.0.0.1")
+                        )
+                    }
                     ForEach($draft.localForwards) { $localForward in
                         VStack(alignment: .leading, spacing: 10) {
                             TextField("Name", text: $localForward.name)

@@ -184,12 +184,12 @@ public struct DynamicForward: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-public enum PortForwardMode: String, Codable, CaseIterable, Sendable {
+enum PortForwardMode: String, Codable, CaseIterable, Sendable {
     case local
     case remote
     case dynamic
 
-    public var displayName: String {
+    var displayName: String {
         switch self {
         case .local: "Local"
         case .remote: "Remote"
@@ -223,7 +223,7 @@ public enum PortForward: Equatable, Identifiable, Sendable {
         }
     }
 
-    public var mode: PortForwardMode {
+    var mode: PortForwardMode {
         switch self {
         case .localForward: .local
         case .remoteForward: .remote

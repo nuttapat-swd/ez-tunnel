@@ -118,6 +118,86 @@ struct TunnelLifecycleAcceptanceTests {
     }
 
     @Test
+    func connectedWaitsForTheSSHSessionAndEveryPortForwardReadinessConfirmation() throws {
+        let supervisor = DiagnosticSSHProcessSupervisor()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            processSupervisor: supervisor
+        )
+        let profile = try TunnelProfile(
+            displayName: "Complete profile",
+            sshHostname: "ssh.example.com",
+            portForwards: [
+                PortForward.local(
+                    name: "Database", listenPort: 15432,
+                    destinationHost: "database.internal", destinationPort: 5432
+                ),
+                PortForward.remote(
+                    name: "Webhook", listenPort: 19000,
+                    destinationHost: "127.0.0.1", destinationPort: 9000
+                ),
+                PortForward.dynamic(name: "SOCKS", listenPort: 1080),
+            ]
+        )
+        try application.save(profile)
+        try application.start(profileID: profile.id)
+
+        supervisor.receive("Entering interactive session", profileID: profile.id)
+        supervisor.receive(
+            "Local forwarding listening on 127.0.0.1 port 15432\n"
+                + "Local forwarding listening on 127.0.0.1 port 1080",
+            profileID: profile.id
+        )
+
+        #expect(application.state(of: profile.id) == .connecting)
+
+        supervisor.receive(
+            "remote forward success for: listen 127.0.0.1:19000, connect 127.0.0.1:9000",
+            profileID: profile.id
+        )
+
+        #expect(application.state(of: profile.id) == .connected)
+    }
+
+    @Test
+    func supervisedOpenSSHBehaviorRoutesAllThreePortForwardModes() throws {
+        let supervisor = ForwardingBehaviorSSHProcessSupervisor()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            processSupervisor: supervisor
+        )
+        let profile = try TunnelProfile(
+            displayName: "Complete profile",
+            sshHostname: "ssh.example.com",
+            portForwards: [
+                PortForward.local(
+                    name: "Database", listenPort: 15432,
+                    destinationHost: "database.internal", destinationPort: 5432
+                ),
+                PortForward.remote(
+                    name: "Webhook", listenAddress: "::1", listenPort: 19000,
+                    destinationHost: "127.0.0.1", destinationPort: 9000
+                ),
+                PortForward.dynamic(name: "SOCKS", listenPort: 1080),
+            ]
+        )
+        try application.save(profile)
+
+        try application.start(profileID: profile.id)
+
+        #expect(supervisor.localListener(
+            address: "127.0.0.1", port: 15432,
+            routesToHost: "database.internal", port: 5432
+        ))
+        #expect(supervisor.remoteListener(
+            address: "::1", port: 19000,
+            routesToHost: "127.0.0.1", port: 9000
+        ))
+        #expect(supervisor.dynamicListenerProvidesSOCKS(address: "127.0.0.1", port: 1080))
+        #expect(supervisor.processCount == 1)
+    }
+
+    @Test
     func openSSHFailureNeedsAttentionWithoutReportingConnected() throws {
         let supervisor = RecordingSSHProcessSupervisor()
         let profile = try makeProfile()
@@ -314,6 +394,89 @@ private final class RecordingSSHProcessSupervisor: SSHProcessSupervising {
     func reportFailure(profileID: UUID, failure: SSHProcessFailure) {
         eventHandlers[profileID]?(.failed(failure))
         eventHandlers[profileID] = nil
+    }
+}
+
+@MainActor
+private final class DiagnosticSSHProcessSupervisor: SSHProcessSupervising {
+    private var trackers = [UUID: SSHProcessReadinessTracker]()
+    private var handlers = [UUID: @MainActor @Sendable (SSHProcessEvent) -> Void]()
+
+    func start(
+        _ request: SSHProcessRequest,
+        eventHandler: @escaping @MainActor @Sendable (SSHProcessEvent) -> Void
+    ) throws {
+        trackers[request.profileID] = SSHProcessReadinessTracker(
+            portForwards: request.portForwards
+        )
+        handlers[request.profileID] = eventHandler
+    }
+
+    func stop(profileID: UUID) {
+        trackers[profileID] = nil
+        handlers[profileID] = nil
+    }
+
+    func receive(_ diagnostic: String, profileID: UUID) {
+        guard var tracker = trackers[profileID] else { return }
+        let isReady = tracker.receive(diagnostic)
+        trackers[profileID] = tracker
+        if isReady {
+            handlers[profileID]?(.ready)
+        }
+    }
+}
+
+@MainActor
+private final class ForwardingBehaviorSSHProcessSupervisor: SSHProcessSupervising {
+    private var requests = [SSHProcessRequest]()
+    var processCount: Int { requests.count }
+
+    func start(
+        _ request: SSHProcessRequest,
+        eventHandler: @escaping @MainActor @Sendable (SSHProcessEvent) -> Void
+    ) throws {
+        requests.append(request)
+    }
+
+    func stop(profileID: UUID) {}
+
+    func localListener(
+        address: String,
+        port listenPort: Int,
+        routesToHost destinationHost: String,
+        port destinationPort: Int
+    ) -> Bool {
+        containsOption(
+            "-L",
+            value: "\(address):\(listenPort):\(destinationHost):\(destinationPort)"
+        )
+    }
+
+    func remoteListener(
+        address: String,
+        port listenPort: Int,
+        routesToHost destinationHost: String,
+        port destinationPort: Int
+    ) -> Bool {
+        containsOption(
+            "-R",
+            value: "[\(address)]:\(listenPort):\(destinationHost):\(destinationPort)"
+        )
+    }
+
+    func dynamicListenerProvidesSOCKS(address: String, port: Int) -> Bool {
+        containsOption("-D", value: "\(address):\(port)")
+    }
+
+    private func containsOption(_ option: String, value: String) -> Bool {
+        requests.contains { request in
+            request.arguments.indices.contains { index in
+                request.arguments[index] == option
+                    && request.arguments.index(after: index) < request.arguments.endIndex
+                    && request.arguments[request.arguments.index(after: index)] == value
+            }
+        }
     }
 }
 
