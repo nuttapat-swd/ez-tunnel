@@ -134,7 +134,7 @@ public final class EZTunnelApplication {
         }
         transition(profileID, to: .connecting)
         do {
-            try startProcess(for: profile)
+            try startProcess(for: profile, allowsInteraction: true)
         } catch {
             transition(profileID, to: .needsAttention(error.localizedDescription))
             throw error
@@ -175,8 +175,13 @@ public final class EZTunnelApplication {
         }
     }
 
-    private func startProcess(for profile: TunnelProfile) throws {
-        try processSupervisor.start(SSHProcessRequest(profile: profile)) { [weak self] event in
+    private func startProcess(
+        for profile: TunnelProfile,
+        allowsInteraction: Bool
+    ) throws {
+        try processSupervisor.start(
+            SSHProcessRequest(profile: profile, allowsInteraction: allowsInteraction)
+        ) { [weak self] event in
             self?.handle(event, for: profile.id)
         }
     }
@@ -194,7 +199,7 @@ public final class EZTunnelApplication {
             }
             self.scheduledRetries[profileID] = nil
             do {
-                try self.startProcess(for: profile)
+                try self.startProcess(for: profile, allowsInteraction: false)
             } catch {
                 self.transition(profileID, to: .needsAttention(error.localizedDescription))
             }

@@ -53,6 +53,7 @@ struct TunnelLifecycleAcceptanceTests {
         #expect(supervisor.requests[0].arguments == [
             "-v", "-N",
             "-F", "/dev/null",
+            "-o", "StrictHostKeyChecking=yes",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
@@ -112,6 +113,7 @@ struct TunnelLifecycleAcceptanceTests {
 
         #expect(supervisor.requests.count == 2)
         #expect(application.state(of: profile.id) == .reconnecting)
+        #expect(supervisor.requests[1].arguments.contains("BatchMode=yes"))
         supervisor.reportReady(profileID: profile.id)
         #expect(application.state(of: profile.id) == .connected)
     }

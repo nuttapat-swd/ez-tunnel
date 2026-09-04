@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum TunnelLifecycleState: Equatable, Sendable {
     case stopped
@@ -40,7 +41,7 @@ public struct SSHProcessRequest: Equatable, Sendable {
     public let arguments: [String]
     let localForwards: [SSHLocalForwardDescriptor]
 
-    init(profile: TunnelProfile) {
+    init(profile: TunnelProfile, allowsInteraction: Bool) {
         self.profileID = profile.id
         self.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         self.localForwards = profile.localForwards.map {
@@ -54,11 +55,15 @@ public struct SSHProcessRequest: Equatable, Sendable {
             "-v",
             "-N",
             "-F", "/dev/null",
+            "-o", "StrictHostKeyChecking=yes",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "-p", String(profile.sshPort.rawValue),
         ]
+        if !allowsInteraction {
+            arguments += ["-o", "BatchMode=yes"]
+        }
         if let username = profile.sshUsername?.rawValue {
             arguments += ["-l", username]
         }
@@ -225,6 +230,9 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         ownedProcess.standardError.fileHandleForReading.readabilityHandler = nil
         ownedProcess.process.terminationHandler = nil
         if ownedProcess.process.isRunning {
+            // OpenSSH may be suspended while trying to read from a controlling
+            // terminal. Resume only this owned process so SIGTERM can be handled.
+            _ = Darwin.kill(ownedProcess.process.processIdentifier, SIGCONT)
             ownedProcess.process.terminate()
             ownedProcess.process.waitUntilExit()
         }
