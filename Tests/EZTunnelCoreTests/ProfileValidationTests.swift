@@ -169,6 +169,50 @@ struct ProfileValidationTests {
     }
 
     @Test
+    func portForwardIdentitiesAreUniqueAcrossModes() throws {
+        let id = UUID()
+        #expect(throws: ProfileValidationError.duplicatePortForwardID(id)) {
+            try TunnelProfile(
+                sshHostname: "development.example.com",
+                portForwards: [
+                    PortForward.local(
+                        id: id, name: "Web", listenPort: 8080,
+                        destinationHost: "localhost", destinationPort: 80
+                    ),
+                    PortForward.dynamic(id: id, name: "SOCKS", listenPort: 1080),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func everyModeRejectsInvalidPortsAndNonLoopbackListenAddresses() {
+        #expect(throws: ProfileValidationError.invalidPort(
+            field: "Destination port",
+            value: 65_536
+        )) {
+            try PortForward.remote(
+                name: "Webhook", listenPort: 9000,
+                destinationHost: "localhost", destinationPort: 65_536
+            )
+        }
+        #expect(throws: ProfileValidationError.invalidListenAddress("0.0.0.0")) {
+            try PortForward.remote(
+                name: "Webhook", listenAddress: "0.0.0.0", listenPort: 9000,
+                destinationHost: "localhost", destinationPort: 9001
+            )
+        }
+        #expect(throws: ProfileValidationError.invalidPort(field: "Listen port", value: 0)) {
+            try PortForward.dynamic(name: "SOCKS", listenPort: 0)
+        }
+        #expect(throws: ProfileValidationError.invalidListenAddress("localhost")) {
+            try PortForward.dynamic(
+                name: "SOCKS", listenAddress: "localhost", listenPort: 1080
+            )
+        }
+    }
+
+    @Test
     func privateKeyAuthenticationRequiresAKeyPath() {
         #expect(throws: ProfileValidationError.privateKeyPathRequired) {
             try TunnelProfile(
