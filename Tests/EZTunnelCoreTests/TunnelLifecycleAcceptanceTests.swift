@@ -67,6 +67,57 @@ struct TunnelLifecycleAcceptanceTests {
     }
 
     @Test
+    func completeTunnelProfileStartsLocalRemoteAndDynamicForwardsInOneOpenSSHProcess() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            processSupervisor: supervisor
+        )
+        let profile = try TunnelProfile(
+            displayName: "Complete profile",
+            sshHostname: "ssh.example.com",
+            portForwards: [
+                PortForward.local(
+                    name: "Database",
+                    listenAddress: "127.0.0.1",
+                    listenPort: 15432,
+                    destinationHost: "database.internal",
+                    destinationPort: 5432
+                ),
+                PortForward.remote(
+                    name: "Webhook",
+                    listenAddress: "::1",
+                    listenPort: 19000,
+                    destinationHost: "127.0.0.1",
+                    destinationPort: 9000
+                ),
+                PortForward.dynamic(
+                    name: "SOCKS",
+                    listenAddress: "127.0.0.1",
+                    listenPort: 1080
+                ),
+            ]
+        )
+        try application.save(profile)
+
+        try application.start(profileID: profile.id)
+
+        #expect(supervisor.requests.count == 1)
+        #expect(supervisor.requests[0].arguments.containsSubsequence(
+            ["-L", "127.0.0.1:15432:database.internal:5432"]
+        ))
+        #expect(supervisor.requests[0].arguments.containsSubsequence(
+            ["-R", "[::1]:19000:127.0.0.1:9000"]
+        ))
+        #expect(supervisor.requests[0].arguments.containsSubsequence(
+            ["-D", "127.0.0.1:1080"]
+        ))
+
+        supervisor.reportReady(profileID: profile.id)
+        #expect(application.state(of: profile.id) == .connected)
+    }
+
+    @Test
     func openSSHFailureNeedsAttentionWithoutReportingConnected() throws {
         let supervisor = RecordingSSHProcessSupervisor()
         let profile = try makeProfile()
@@ -222,6 +273,15 @@ struct TunnelLifecycleAcceptanceTests {
                 LocalForward(name: "PostgreSQL", listenPort: 5432, destinationPort: 5432),
             ]
         )
+    }
+}
+
+private extension Array where Element: Equatable {
+    func containsSubsequence(_ candidate: [Element]) -> Bool {
+        indices.contains { start in
+            let end = index(start, offsetBy: candidate.count, limitedBy: endIndex) ?? endIndex
+            return end - start == candidate.count && Array(self[start..<end]) == candidate
+        }
     }
 }
 

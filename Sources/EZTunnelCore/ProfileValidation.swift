@@ -5,10 +5,11 @@ public enum ProfileValidationError: Error, Equatable, LocalizedError, Sendable {
     case invalidPort(field: String, value: Int)
     case invalidListenAddress(String)
     case duplicateDisplayName(String)
-    case requiresLocalForward
-    case duplicateLocalForwardID(UUID)
-    case duplicateLocalForwardName(String)
-    case duplicateListenPort(Int)
+    case requiresPortForward
+    case duplicatePortForwardID(UUID)
+    case duplicatePortForwardName(String)
+    case duplicateListenEndpoint(address: String, port: Int)
+    case localForwardsRequireSharedHosts
     case privateKeyPathRequired
     case passwordRequired
 
@@ -22,14 +23,16 @@ public enum ProfileValidationError: Error, Equatable, LocalizedError, Sendable {
             "Listen address must be 127.0.0.1 or ::1 (received \(address))."
         case .duplicateDisplayName(let name):
             "A Tunnel Profile named \(name) already exists."
-        case .requiresLocalForward:
-            "A Tunnel Profile requires at least one Local Forward."
-        case .duplicateLocalForwardID(let id):
-            "Local Forward identity \(id.uuidString) appears more than once."
-        case .duplicateLocalForwardName(let name):
-            "A Local Forward named \(name) already exists in this Tunnel Profile."
-        case .duplicateListenPort(let port):
-            "Listen port \(port) is used more than once in this Tunnel Profile."
+        case .requiresPortForward:
+            "A Tunnel Profile requires at least one Port Forward."
+        case .duplicatePortForwardID(let id):
+            "Port Forward identity \(id.uuidString) appears more than once."
+        case .duplicatePortForwardName(let name):
+            "A Port Forward named \(name) already exists in this Tunnel Profile."
+        case .duplicateListenEndpoint(let address, let port):
+            "Listen endpoint \(address):\(port) is used more than once in this Tunnel Profile."
+        case .localForwardsRequireSharedHosts:
+            "Local Forwards in one Tunnel Profile must share the same hosts."
         case .privateKeyPathRequired:
             "Select a private key file."
         case .passwordRequired:
@@ -40,7 +43,7 @@ public enum ProfileValidationError: Error, Equatable, LocalizedError, Sendable {
 
 public enum ProfileValidator {
     public static func validate(_ profile: TunnelProfile, against profiles: [TunnelProfile] = []) throws {
-        try validateLocalForwards(profile.localForwards)
+        try validatePortForwards(profile.portForwards)
         if profile.authenticationMethod == .privateKey, profile.privateKeyPath == nil {
             throw ProfileValidationError.privateKeyPathRequired
         }
@@ -55,25 +58,37 @@ public enum ProfileValidator {
         }
     }
 
-    public static func validateLocalForwards(_ localForwards: [LocalForward]) throws {
-        guard !localForwards.isEmpty else {
-            throw ProfileValidationError.requiresLocalForward
+    public static func validatePortForwards(_ portForwards: [PortForward]) throws {
+        guard !portForwards.isEmpty else {
+            throw ProfileValidationError.requiresPortForward
         }
         var ids = Set<UUID>()
         var names = Set<String>()
-        var listenPorts = Set<Int>()
-        for localForward in localForwards {
-            guard ids.insert(localForward.id).inserted else {
-                throw ProfileValidationError.duplicateLocalForwardID(localForward.id)
+        var endpoints = Set<ListenEndpoint>()
+        for portForward in portForwards {
+            guard ids.insert(portForward.id).inserted else {
+                throw ProfileValidationError.duplicatePortForwardID(portForward.id)
             }
-            let name = localForward.name.rawValue
+            let name = portForward.name.rawValue
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard names.insert(name).inserted else {
-                throw ProfileValidationError.duplicateLocalForwardName(localForward.name.rawValue)
+                throw ProfileValidationError.duplicatePortForwardName(portForward.name.rawValue)
             }
-            guard listenPorts.insert(localForward.listenPort.rawValue).inserted else {
-                throw ProfileValidationError.duplicateListenPort(localForward.listenPort.rawValue)
+            let endpoint = ListenEndpoint(
+                address: portForward.listenAddress.rawValue,
+                port: portForward.listenPort.rawValue
+            )
+            guard endpoints.insert(endpoint).inserted else {
+                throw ProfileValidationError.duplicateListenEndpoint(
+                    address: endpoint.address,
+                    port: endpoint.port
+                )
             }
         }
     }
+}
+
+private struct ListenEndpoint: Hashable {
+    let address: String
+    let port: Int
 }

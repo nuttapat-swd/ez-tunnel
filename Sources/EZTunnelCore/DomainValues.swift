@@ -52,14 +52,16 @@ public struct SSHUsername: ValidatedStringValue, Equatable, Hashable, Sendable {
     }
 }
 
-public struct LocalForwardName: ValidatedStringValue, Equatable, Hashable, Sendable {
+public struct PortForwardName: ValidatedStringValue, Equatable, Hashable, Sendable {
     public let rawValue: String
 
     public init(rawValue: String) throws {
-        try requireValue(rawValue, field: "Local Forward name")
+        try requireValue(rawValue, field: "Port Forward name")
         self.rawValue = rawValue
     }
 }
+
+public typealias LocalForwardName = PortForwardName
 
 public struct DestinationHost: ValidatedStringValue, Equatable, Hashable, Sendable {
     public let rawValue: String

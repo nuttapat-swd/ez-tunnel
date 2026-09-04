@@ -28,7 +28,7 @@ struct ProfileValidationTests {
         #expect(throws: ProfileValidationError.missingValue("SSH hostname")) {
             try makeProfile(sshHostname: "")
         }
-        #expect(throws: ProfileValidationError.missingValue("Local Forward name")) {
+        #expect(throws: ProfileValidationError.missingValue("Port Forward name")) {
             try makeProfile(forwardName: "")
         }
     }
@@ -94,7 +94,7 @@ struct ProfileValidationTests {
 
     @Test
     func tunnelProfileRequiresAtLeastOneLocalForward() {
-        #expect(throws: ProfileValidationError.requiresLocalForward) {
+        #expect(throws: ProfileValidationError.requiresPortForward) {
             try TunnelProfile(
                 sshHostname: "development.example.com",
                 destinationHost: "localhost",
@@ -108,13 +108,64 @@ struct ProfileValidationTests {
         let first = try LocalForward(name: "Web", listenPort: 8080, destinationPort: 80)
         let second = try LocalForward(name: "Admin", listenPort: 8080, destinationPort: 8081)
 
-        #expect(throws: ProfileValidationError.duplicateListenPort(8080)) {
+        #expect(throws: ProfileValidationError.duplicateListenEndpoint(
+            address: "127.0.0.1",
+            port: 8080
+        )) {
             try TunnelProfile(
                 sshHostname: "development.example.com",
                 destinationHost: "localhost",
                 localForwards: [first, second]
             )
         }
+    }
+
+    @Test
+    func portForwardNamesAndListenEndpointsAreUniqueAcrossModes() throws {
+        #expect(throws: ProfileValidationError.duplicatePortForwardName("web")) {
+            try TunnelProfile(
+                sshHostname: "development.example.com",
+                portForwards: [
+                    PortForward.local(
+                        name: "Web", listenPort: 8080,
+                        destinationHost: "localhost", destinationPort: 80
+                    ),
+                    PortForward.dynamic(name: "web", listenPort: 1080),
+                ]
+            )
+        }
+
+        #expect(throws: ProfileValidationError.duplicateListenEndpoint(
+            address: "127.0.0.1",
+            port: 8080
+        )) {
+            try TunnelProfile(
+                sshHostname: "development.example.com",
+                portForwards: [
+                    PortForward.local(
+                        name: "Web", listenPort: 8080,
+                        destinationHost: "localhost", destinationPort: 80
+                    ),
+                    PortForward.dynamic(name: "SOCKS", listenPort: 8080),
+                ]
+            )
+        }
+    }
+
+    @Test
+    func anotherTunnelProfileMayReuseANameAndListenEndpoint() throws {
+        let first = try TunnelProfile(
+            displayName: "First",
+            sshHostname: "first.example.com",
+            portForwards: [PortForward.dynamic(name: "SOCKS", listenPort: 1080)]
+        )
+        let second = try TunnelProfile(
+            displayName: "Second",
+            sshHostname: "second.example.com",
+            portForwards: [PortForward.dynamic(name: "SOCKS", listenPort: 1080)]
+        )
+
+        try ProfileValidator.validate(second, against: [first])
     }
 
     @Test

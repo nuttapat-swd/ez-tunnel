@@ -18,9 +18,9 @@ struct ManagementView: View {
                     Text(model.state(of: profile.id).displayName)
                         .foregroundStyle(.secondary)
                     Text(
-                        "\(profile.localForwards.count) "
-                            + (profile.localForwards.count == 1
-                                ? "Local Forward" : "Local Forwards")
+                        "\(profile.portForwards.count) "
+                            + (profile.portForwards.count == 1
+                                ? "Port Forward" : "Port Forwards")
                     )
                         .foregroundStyle(.secondary)
                 }
@@ -78,7 +78,7 @@ struct ManagementView: View {
                             TextField("Name", text: $localForward.name)
                             TextField("Listen port", text: $localForward.listenPort)
                             TextField("Destination port", text: $localForward.destinationPort)
-                            if draft.localForwards.count > 1 {
+                            if portForwardCount > 1 {
                                 Button("Remove Local Forward", role: .destructive) {
                                     draft.removeLocalForward(id: localForward.id)
                                 }
@@ -89,6 +89,54 @@ struct ManagementView: View {
 
                     Button("Add Local Forward", systemImage: "plus") {
                         draft.addLocalForward()
+                    }
+                }
+
+                Section("Remote Forwards") {
+                    ForEach($draft.remoteForwards) { $remoteForward in
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Name", text: $remoteForward.name)
+                            Picker("Remote listen address", selection: $remoteForward.listenAddress) {
+                                Text("127.0.0.1").tag("127.0.0.1")
+                                Text("::1").tag("::1")
+                            }
+                            TextField("Remote listen port", text: $remoteForward.listenPort)
+                            TextField("Destination host", text: $remoteForward.destinationHost)
+                            TextField("Destination port", text: $remoteForward.destinationPort)
+                            if portForwardCount > 1 {
+                                Button("Remove Remote Forward", role: .destructive) {
+                                    draft.removeRemoteForward(id: remoteForward.id)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    Button("Add Remote Forward", systemImage: "plus") {
+                        draft.addRemoteForward()
+                    }
+                }
+
+                Section("Dynamic Forwards") {
+                    ForEach($draft.dynamicForwards) { $dynamicForward in
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Name", text: $dynamicForward.name)
+                            Picker("Local listen address", selection: $dynamicForward.listenAddress) {
+                                Text("127.0.0.1").tag("127.0.0.1")
+                                Text("::1").tag("::1")
+                            }
+                            TextField("Listen port", text: $dynamicForward.listenPort)
+                            if portForwardCount > 1 {
+                                Button("Remove Dynamic Forward", role: .destructive) {
+                                    draft.removeDynamicForward(id: dynamicForward.id)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    Button("Add Dynamic Forward", systemImage: "plus") {
+                        draft.addDynamicForward()
                     }
                 }
 
@@ -148,6 +196,10 @@ struct ManagementView: View {
         .onDisappear {
             model.managementWindowDidClose()
         }
+    }
+
+    private var portForwardCount: Int {
+        draft.localForwards.count + draft.remoteForwards.count + draft.dynamicForwards.count
     }
 
 }

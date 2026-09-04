@@ -44,10 +44,10 @@ public struct SSHProcessRequest: Equatable, Sendable {
     init(profile: TunnelProfile, allowsInteraction: Bool) {
         self.profileID = profile.id
         self.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        self.localForwards = profile.localForwards.map {
+        self.localForwards = profile.portForwards.map {
             SSHLocalForwardDescriptor(
                 name: $0.name.rawValue,
-                listenAddress: profile.listenAddress.rawValue,
+                listenAddress: $0.listenAddress.rawValue,
                 listenPort: $0.listenPort.rawValue
             )
         }
@@ -70,14 +70,29 @@ public struct SSHProcessRequest: Equatable, Sendable {
         if profile.authenticationMethod == .privateKey, let path = profile.privateKeyPath {
             arguments += ["-o", "IdentitiesOnly=yes", "-i", path]
         }
-        for forward in profile.localForwards {
-            let listenAddress = Self.forwardingHost(profile.listenAddress.rawValue)
-            let destinationHost = Self.forwardingHost(profile.destinationHost.rawValue)
-            arguments += [
-                "-L",
-                "\(listenAddress):\(forward.listenPort.rawValue):"
-                    + "\(destinationHost):\(forward.destinationPort.rawValue)",
-            ]
+        for forward in profile.portForwards {
+            let listenAddress = Self.forwardingHost(forward.listenAddress.rawValue)
+            switch forward {
+            case .localForward(let local, _, let destinationHost):
+                arguments += [
+                    "-L",
+                    "\(listenAddress):\(local.listenPort.rawValue):"
+                        + "\(Self.forwardingHost(destinationHost.rawValue)):"
+                        + "\(local.destinationPort.rawValue)",
+                ]
+            case .remoteForward(let remote):
+                arguments += [
+                    "-R",
+                    "\(listenAddress):\(remote.listenPort.rawValue):"
+                        + "\(Self.forwardingHost(remote.destinationHost.rawValue)):"
+                        + "\(remote.destinationPort.rawValue)",
+                ]
+            case .dynamicForward(let dynamic):
+                arguments += [
+                    "-D",
+                    "\(listenAddress):\(dynamic.listenPort.rawValue)",
+                ]
+            }
         }
         arguments += ["--", profile.sshHostname.rawValue]
         self.arguments = arguments
