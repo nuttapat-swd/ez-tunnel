@@ -17,6 +17,10 @@ let package = Package(
             name: "EZTunnel",
             dependencies: ["EZTunnelCore", "EZTunnelAppSupport"]
         ),
+        .executableTarget(
+            name: "EZTunnelAskPass",
+            dependencies: ["EZTunnelCore", "EZTunnelAppSupport"]
+        ),
         .testTarget(
             name: "EZTunnelCoreTests",
             dependencies: ["EZTunnelCore", "EZTunnelAppSupport"]

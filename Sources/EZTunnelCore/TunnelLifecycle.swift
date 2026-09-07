@@ -44,6 +44,9 @@ public struct SSHProcessRequest: Sendable {
     public let arguments: [String]
     let portForwards: [SSHPortForwardDescriptor]
     let credential: String?
+    let allowsInteraction: Bool
+    let endpoint: String
+    let credentialKind: SSHCredentialKind?
 
     init(
         profile: TunnelProfile,
@@ -54,6 +57,13 @@ public struct SSHProcessRequest: Sendable {
         self.profileID = profile.id
         self.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         self.credential = credential
+        self.allowsInteraction = allowsInteraction
+        self.endpoint = "\(profile.sshHostname.rawValue):\(profile.sshPort.rawValue)"
+        switch profile.authenticationMethod {
+        case .systemDefault: self.credentialKind = nil
+        case .password: self.credentialKind = .password
+        case .privateKey: self.credentialKind = .privateKeyPassphrase
+        }
         let requestedPortForwards = includesPortForwards ? profile.portForwards : []
         self.portForwards = requestedPortForwards.map {
             SSHPortForwardDescriptor(
@@ -68,7 +78,7 @@ public struct SSHProcessRequest: Sendable {
             "-v",
             "-N",
             "-F", "/dev/null",
-            "-o", "StrictHostKeyChecking=yes",
+            "-o", "StrictHostKeyChecking=\(allowsInteraction ? "ask" : "yes")",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
@@ -274,16 +284,29 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             standardError: standardError,
             request: request
         )
-        if let credential = request.credential {
-            let resources = try makeAskPassResources(credential: credential)
-            var environment = ProcessInfo.processInfo.environment
-            environment["SSH_ASKPASS"] = resources.helperURL.path
-            environment["SSH_ASKPASS_REQUIRE"] = "force"
-            environment["DISPLAY"] = "ez-tunnel"
-            environment["EZ_TUNNEL_SSH_CREDENTIAL_PIPE"] = resources.pipeURL.path
-            process.environment = environment
-            ownedProcess.askPassResources = resources
+        var environment = ProcessInfo.processInfo.environment
+        for key in ["SSH_ASKPASS", "SSH_ASKPASS_PROMPT", "EZ_TUNNEL_SSH_CREDENTIAL_PIPE",
+                    "EZ_TUNNEL_SSH_CREDENTIAL_KIND", "EZ_TUNNEL_SSH_ENDPOINT"] {
+            environment[key] = nil
         }
+        environment["LC_ALL"] = "C"
+        environment["SSH_ASKPASS_REQUIRE"] = request.allowsInteraction ? "force" : "never"
+        if request.allowsInteraction {
+            let helperURL = Bundle.main.executableURL!.deletingLastPathComponent()
+                .appendingPathComponent("EZTunnelAskPass")
+            guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
+                throw SSHInteractionError.helperUnavailable
+            }
+            environment["SSH_ASKPASS"] = helperURL.path
+            environment["EZ_TUNNEL_SSH_ENDPOINT"] = request.endpoint
+            environment["EZ_TUNNEL_SSH_CREDENTIAL_KIND"] = request.credentialKind?.rawValue
+            if let credential = request.credential {
+                let resources = try makeAskPassResources(credential: credential)
+                environment["EZ_TUNNEL_SSH_CREDENTIAL_PIPE"] = resources.pipeURL.path
+                ownedProcess.askPassResources = resources
+            }
+        }
+        process.environment = environment
 
         standardError.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -366,53 +389,51 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
     }
 
     private struct AskPassResources {
-        let helperURL: URL
+        let directoryURL: URL
         let pipeURL: URL
         let pipeHandle: FileHandle
     }
 
     private func makeAskPassResources(credential: String) throws -> AskPassResources {
-        let identifier = UUID().uuidString
-        let helperURL = FileManager.default.temporaryDirectory
+        // OpenSSH askpass reads at most 1023 bytes and ends at the first newline.
+        guard !credential.isEmpty, credential.utf8.count < 1024,
+              !credential.contains("\n"), !credential.contains("\r"),
+              !credential.contains("\0") else { throw SSHInteractionError.invalidCredential }
+        let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("ez-tunnel-askpass-\(UUID().uuidString)")
-        let pipeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ez-tunnel-credential-\(identifier)")
-        let script = "#!/bin/sh\nhead -n 1 \"$EZ_TUNNEL_SSH_CREDENTIAL_PIPE\"\n"
-            + "status=$?\nrm -f \"$EZ_TUNNEL_SSH_CREDENTIAL_PIPE\"\nexit $status\n"
-        try Data(script.utf8).write(to: helperURL, options: .atomic)
-        guard chmod(helperURL.path, S_IRUSR | S_IWUSR | S_IXUSR) == 0,
-              mkfifo(pipeURL.path, S_IRUSR | S_IWUSR) == 0 else {
-            try? FileManager.default.removeItem(at: helperURL)
-            try? FileManager.default.removeItem(at: pipeURL)
-            throw POSIXError(.EACCES)
+        try FileManager.default.createDirectory(
+            at: directoryURL, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let pipeURL = directoryURL.appendingPathComponent("credential")
+        guard mkfifo(pipeURL.path, S_IRUSR | S_IWUSR) == 0 else {
+            try? FileManager.default.removeItem(at: directoryURL)
+            throw SSHInteractionError.credentialUnavailable
         }
-        let descriptor = open(pipeURL.path, O_RDWR | O_NONBLOCK)
+        let descriptor = open(pipeURL.path, O_RDWR | O_NONBLOCK | O_CLOEXEC)
         guard descriptor >= 0 else {
-            try? FileManager.default.removeItem(at: helperURL)
-            try? FileManager.default.removeItem(at: pipeURL)
-            throw POSIXError(.EACCES)
+            try? FileManager.default.removeItem(at: directoryURL)
+            throw SSHInteractionError.credentialUnavailable
         }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         do {
-            try handle.write(contentsOf: Data("\(credential)\n".utf8))
+            try handle.write(contentsOf: Data(credential.utf8))
             return AskPassResources(
-                helperURL: helperURL,
+                directoryURL: directoryURL,
                 pipeURL: pipeURL,
                 pipeHandle: handle
             )
         } catch {
             try? handle.close()
-            try? FileManager.default.removeItem(at: helperURL)
-            try? FileManager.default.removeItem(at: pipeURL)
-            throw error
+            try? FileManager.default.removeItem(at: directoryURL)
+            throw SSHInteractionError.credentialUnavailable
         }
     }
 
     private func removeAskPassResources(_ resources: AskPassResources?) {
         guard let resources else { return }
         try? resources.pipeHandle.close()
-        try? FileManager.default.removeItem(at: resources.helperURL)
-        try? FileManager.default.removeItem(at: resources.pipeURL)
+        try? FileManager.default.removeItem(at: resources.directoryURL)
     }
 
     static func interpretFailure(
@@ -487,5 +508,22 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             return .needsAttention(message)
         }
         return .temporary(message)
+    }
+}
+
+private enum SSHInteractionError: LocalizedError {
+    case helperUnavailable
+    case invalidCredential
+    case credentialUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .helperUnavailable:
+            "The SSH prompt helper is unavailable. Rebuild or reinstall EZ Tunnel."
+        case .invalidCredential:
+            "The SSH credential cannot be supplied to OpenSSH. Use a single line shorter than 1024 bytes."
+        case .credentialUnavailable:
+            "The SSH credential could not be supplied securely. Retry the manual connection."
+        }
     }
 }
