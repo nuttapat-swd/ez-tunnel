@@ -145,6 +145,21 @@ struct ManagementView: View {
                 if let errorMessage = model.errorMessage {
                     Text(errorMessage).foregroundStyle(.red)
                 }
+                if let outcome = model.testConnectionOutcome(for: draft.profileID) {
+                    Text(outcome.displayMessage)
+                        .foregroundStyle(testConnectionColor(outcome))
+                }
+                Button("Test Connection") {
+                    do {
+                        model.testConnection(
+                            try draft.makeProfile(),
+                            credential: draft.credential
+                        )
+                    } catch {
+                        model.errorMessage = error.localizedDescription
+                    }
+                }
+                .disabled(model.testConnectionOutcome(for: draft.profileID) == .testing)
                 Button("Save Tunnel Profile") {
                     do {
                         let profile = try draft.makeProfile()
@@ -202,6 +217,14 @@ struct ManagementView: View {
 
     private var portForwardCount: Int {
         draft.localForwards.count + draft.remoteForwards.count + draft.dynamicForwards.count
+    }
+
+    private func testConnectionColor(_ outcome: TestConnectionOutcome) -> Color {
+        switch outcome {
+        case .testing: .secondary
+        case .succeeded: .green
+        case .needsAttention, .temporaryFailure: .red
+        }
     }
 
 }

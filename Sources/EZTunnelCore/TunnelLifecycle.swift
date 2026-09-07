@@ -24,6 +24,7 @@ public enum TunnelLifecycleState: Equatable, Sendable {
 public enum TunnelLifecycleError: Error, Equatable, LocalizedError, Sendable {
     case profileNotFound(UUID)
     case profileAlreadyActive(UUID)
+    case testConnectionAlreadyInProgress(UUID)
 
     public var errorDescription: String? {
         switch self {
@@ -31,20 +32,30 @@ public enum TunnelLifecycleError: Error, Equatable, LocalizedError, Sendable {
             "Tunnel Profile \(id.uuidString) was not found."
         case .profileAlreadyActive:
             "The Tunnel Profile is already active."
+        case .testConnectionAlreadyInProgress:
+            "A Test Connection is already in progress for this Tunnel Profile."
         }
     }
 }
 
-public struct SSHProcessRequest: Equatable, Sendable {
+public struct SSHProcessRequest: Sendable {
     public let profileID: UUID
     public let executableURL: URL
     public let arguments: [String]
     let portForwards: [SSHPortForwardDescriptor]
+    let credential: String?
 
-    init(profile: TunnelProfile, allowsInteraction: Bool) {
+    init(
+        profile: TunnelProfile,
+        allowsInteraction: Bool,
+        includesPortForwards: Bool = true,
+        credential: String? = nil
+    ) {
         self.profileID = profile.id
         self.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        self.portForwards = profile.portForwards.map {
+        self.credential = credential
+        let requestedPortForwards = includesPortForwards ? profile.portForwards : []
+        self.portForwards = requestedPortForwards.map {
             SSHPortForwardDescriptor(
                 id: $0.id,
                 name: $0.name.rawValue,
@@ -66,13 +77,16 @@ public struct SSHProcessRequest: Equatable, Sendable {
         if !allowsInteraction {
             arguments += ["-o", "BatchMode=yes"]
         }
+        if credential != nil {
+            arguments += ["-o", "NumberOfPasswordPrompts=1"]
+        }
         if let username = profile.sshUsername?.rawValue {
             arguments += ["-l", username]
         }
         if profile.authenticationMethod == .privateKey, let path = profile.privateKeyPath {
             arguments += ["-o", "IdentitiesOnly=yes", "-i", path]
         }
-        for forward in profile.portForwards {
+        for forward in requestedPortForwards {
             let listenAddress = Self.forwardingHost(forward.listenAddress.rawValue)
             switch forward {
             case .localForward(let local, _, let destinationHost):
@@ -227,6 +241,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         var readinessTracker: SSHProcessReadinessTracker
         var diagnosticOutput = ""
         var readyReported = false
+        var askPassResources: AskPassResources?
 
         init(process: Process, standardError: Pipe, request: SSHProcessRequest) {
             self.process = process
@@ -259,6 +274,17 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             standardError: standardError,
             request: request
         )
+        if let credential = request.credential {
+            let resources = try makeAskPassResources(credential: credential)
+            var environment = ProcessInfo.processInfo.environment
+            environment["SSH_ASKPASS"] = resources.helperURL.path
+            environment["SSH_ASKPASS_REQUIRE"] = "force"
+            environment["DISPLAY"] = "ez-tunnel"
+            environment["EZ_TUNNEL_SSH_CREDENTIAL_PIPE"] = resources.pipeURL.path
+            process.environment = environment
+            ownedProcess.askPassResources = resources
+        }
+
         standardError.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
@@ -285,6 +311,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             processes[request.profileID] = nil
             standardError.fileHandleForReading.readabilityHandler = nil
             process.terminationHandler = nil
+            removeAskPassResources(ownedProcess.askPassResources)
             throw error
         }
     }
@@ -300,6 +327,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             ownedProcess.process.terminate()
             ownedProcess.process.waitUntilExit()
         }
+        removeAskPassResources(ownedProcess.askPassResources)
     }
 
     private func receive(
@@ -328,20 +356,106 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
     ) {
         guard let ownedProcess = processes.removeValue(forKey: profileID) else { return }
         ownedProcess.standardError.fileHandleForReading.readabilityHandler = nil
+        removeAskPassResources(ownedProcess.askPassResources)
         let diagnostic = ownedProcess.diagnosticOutput
+        eventHandler(.failed(Self.interpretFailure(
+            diagnostic: diagnostic,
+            status: status,
+            portForwards: ownedProcess.request.portForwards
+        )))
+    }
+
+    private struct AskPassResources {
+        let helperURL: URL
+        let pipeURL: URL
+        let pipeHandle: FileHandle
+    }
+
+    private func makeAskPassResources(credential: String) throws -> AskPassResources {
+        let identifier = UUID().uuidString
+        let helperURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ez-tunnel-askpass-\(UUID().uuidString)")
+        let pipeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ez-tunnel-credential-\(identifier)")
+        let script = "#!/bin/sh\nhead -n 1 \"$EZ_TUNNEL_SSH_CREDENTIAL_PIPE\"\n"
+            + "status=$?\nrm -f \"$EZ_TUNNEL_SSH_CREDENTIAL_PIPE\"\nexit $status\n"
+        try Data(script.utf8).write(to: helperURL, options: .atomic)
+        guard chmod(helperURL.path, S_IRUSR | S_IWUSR | S_IXUSR) == 0,
+              mkfifo(pipeURL.path, S_IRUSR | S_IWUSR) == 0 else {
+            try? FileManager.default.removeItem(at: helperURL)
+            try? FileManager.default.removeItem(at: pipeURL)
+            throw POSIXError(.EACCES)
+        }
+        let descriptor = open(pipeURL.path, O_RDWR | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            try? FileManager.default.removeItem(at: helperURL)
+            try? FileManager.default.removeItem(at: pipeURL)
+            throw POSIXError(.EACCES)
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: Data("\(credential)\n".utf8))
+            return AskPassResources(
+                helperURL: helperURL,
+                pipeURL: pipeURL,
+                pipeHandle: handle
+            )
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: helperURL)
+            try? FileManager.default.removeItem(at: pipeURL)
+            throw error
+        }
+    }
+
+    private func removeAskPassResources(_ resources: AskPassResources?) {
+        guard let resources else { return }
+        try? resources.pipeHandle.close()
+        try? FileManager.default.removeItem(at: resources.helperURL)
+        try? FileManager.default.removeItem(at: resources.pipeURL)
+    }
+
+    static func interpretFailure(
+        diagnostic: String,
+        status: Int32,
+        portForwards: [SSHPortForwardDescriptor]
+    ) -> SSHProcessFailure {
         let message = diagnosticMessage(
             from: diagnostic,
             status: status,
-            portForwards: ownedProcess.request.portForwards
+            portForwards: portForwards
         )
-        eventHandler(.failed(classifyFailure(diagnostic: diagnostic, message: message)))
+        return classifyFailure(diagnostic: diagnostic, message: message)
     }
 
-    private func diagnosticMessage(
+    private static func diagnosticMessage(
         from diagnostic: String,
         status: Int32,
         portForwards: [SSHPortForwardDescriptor]
     ) -> String {
+        if diagnostic.localizedCaseInsensitiveContains(
+            "REMOTE HOST IDENTIFICATION HAS CHANGED"
+        ) {
+            return "The SSH Endpoint host key has changed. Verify it outside EZ Tunnel; "
+                + "automatic replacement is disabled."
+        }
+        if diagnostic.localizedCaseInsensitiveContains("Host key verification failed") {
+            return "The SSH Endpoint host key is not trusted. Verify its fingerprint and add "
+                + "it to known_hosts before retrying."
+        }
+        if diagnostic.localizedCaseInsensitiveContains("Permission denied") {
+            return "Authentication was rejected for the SSH Endpoint. Verify the username and "
+                + "credential before retrying."
+        }
+        if diagnostic.localizedCaseInsensitiveContains("Could not resolve hostname") {
+            return "The SSH Endpoint hostname could not be resolved. Verify the hostname and "
+                + "network connection."
+        }
+        if diagnostic.localizedCaseInsensitiveContains("no such identity")
+            || (diagnostic.localizedCaseInsensitiveContains("Identity file")
+                && diagnostic.localizedCaseInsensitiveContains("not accessible")) {
+            return "The selected private key file is unavailable. Choose a readable private key."
+        }
         if diagnostic.localizedCaseInsensitiveContains("Address already in use"),
            let forward = portForwards.first(where: {
                diagnostic.contains("port: \($0.listenPort)")
@@ -359,7 +473,14 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         return usefulLine ?? "OpenSSH exited with status \(status)."
     }
 
-    private func classifyFailure(diagnostic: String, message: String) -> SSHProcessFailure {
+    private static func classifyFailure(
+        diagnostic: String,
+        message: String
+    ) -> SSHProcessFailure {
+        if diagnostic.localizedCaseInsensitiveContains("Identity file"),
+           diagnostic.localizedCaseInsensitiveContains("not accessible") {
+            return .needsAttention(message)
+        }
         if Self.interventionMarkers.contains(
             where: diagnostic.localizedCaseInsensitiveContains
         ) {

@@ -14,10 +14,27 @@ public enum ProfileStoreError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
+public enum TestConnectionOutcome: Equatable, Sendable {
+    case testing
+    case succeeded
+    case needsAttention(String)
+    case temporaryFailure(String)
+
+    public var displayMessage: String {
+        switch self {
+        case .testing: "Testing SSH Endpoint…"
+        case .succeeded: "Test Connection succeeded."
+        case .needsAttention(let message): "Test Connection Needs Attention: \(message)"
+        case .temporaryFailure(let message): "Test Connection could not connect: \(message)"
+        }
+    }
+}
+
 @MainActor
 public final class EZTunnelApplication {
     public private(set) var profiles: [TunnelProfile]
     public var stateDidChange: (@MainActor (UUID, TunnelLifecycleState) -> Void)?
+    public var testConnectionDidChange: (@MainActor (UUID, TestConnectionOutcome) -> Void)?
 
     private let persistence: any ProfilePersistence
     private let credentialStore: any SSHCredentialStore
@@ -26,6 +43,7 @@ public final class EZTunnelApplication {
     private var lifecycleStates = [UUID: TunnelLifecycleState]()
     private var retryAttempts = [UUID: Int]()
     private var scheduledRetries = [UUID: UUID]()
+    private var testConnectionOutcomes = [UUID: TestConnectionOutcome]()
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
@@ -128,12 +146,68 @@ public final class EZTunnelApplication {
         lifecycleStates[profileID] ?? .stopped
     }
 
+    public func testConnectionOutcome(for profileID: UUID) -> TestConnectionOutcome? {
+        testConnectionOutcomes[profileID]
+    }
+
+    public func testConnection(_ profile: TunnelProfile, credential: String? = nil) throws {
+        let profileID = profile.id
+        guard state(of: profileID) == .stopped else {
+            throw TunnelLifecycleError.profileAlreadyActive(profileID)
+        }
+        guard testConnectionOutcomes[profileID] != .testing else {
+            throw TunnelLifecycleError.testConnectionAlreadyInProgress(profileID)
+        }
+        let storedCredential = try profile.authenticationMethod.credentialKind.flatMap {
+            try credentialStore.credential(for: SSHCredentialKey(profileID: profileID, kind: $0))
+        }
+        let connectionCredential = credential?.isEmpty == false ? credential : storedCredential
+        if profile.authenticationMethod == .password, connectionCredential == nil {
+            let error = ProfileValidationError.passwordRequired
+            let outcome = TestConnectionOutcome.needsAttention(error.localizedDescription)
+            transitionTestConnection(profileID, to: outcome)
+            throw error
+        }
+        let outcome = TestConnectionOutcome.testing
+        transitionTestConnection(profileID, to: outcome)
+        do {
+            try processSupervisor.start(
+                SSHProcessRequest(
+                    profile: profile,
+                    allowsInteraction: true,
+                    includesPortForwards: false,
+                    credential: connectionCredential
+                )
+            ) { [weak self] event in
+                guard let self else { return }
+                let outcome: TestConnectionOutcome
+                switch event {
+                case .ready:
+                    self.processSupervisor.stop(profileID: profileID)
+                    outcome = .succeeded
+                case .failed(.needsAttention(let message)):
+                    outcome = .needsAttention(message)
+                case .failed(.temporary(let message)):
+                    outcome = .temporaryFailure(message)
+                }
+                self.transitionTestConnection(profileID, to: outcome)
+            }
+        } catch {
+            let outcome = TestConnectionOutcome.needsAttention(error.localizedDescription)
+            transitionTestConnection(profileID, to: outcome)
+            throw error
+        }
+    }
+
     public func start(profileID: UUID) throws {
         guard let profile = profiles.first(where: { $0.id == profileID }) else {
             throw TunnelLifecycleError.profileNotFound(profileID)
         }
         guard state(of: profileID) == .stopped else {
             throw TunnelLifecycleError.profileAlreadyActive(profileID)
+        }
+        guard testConnectionOutcomes[profileID] != .testing else {
+            throw TunnelLifecycleError.testConnectionAlreadyInProgress(profileID)
         }
         transition(profileID, to: .connecting)
         do {
@@ -217,6 +291,14 @@ public final class EZTunnelApplication {
     private func transition(_ profileID: UUID, to state: TunnelLifecycleState) {
         lifecycleStates[profileID] = state
         stateDidChange?(profileID, state)
+    }
+
+    private func transitionTestConnection(
+        _ profileID: UUID,
+        to outcome: TestConnectionOutcome
+    ) {
+        testConnectionOutcomes[profileID] = outcome
+        testConnectionDidChange?(profileID, outcome)
     }
 
     private func setCredential(_ credential: String?, for key: SSHCredentialKey) throws {
