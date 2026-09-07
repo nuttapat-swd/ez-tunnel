@@ -5,6 +5,210 @@ import Testing
 @MainActor
 struct TunnelLifecycleAcceptanceTests {
     @Test
+    func testConnectionVerifiesTheDirectSSHEndpointWithoutOpeningPortForwards() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let profile = try makeProfile()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            processSupervisor: supervisor
+        )
+
+        try application.testConnection(profile)
+
+        #expect(application.testConnectionOutcome(for: profile.id) == .testing)
+        let request = try #require(supervisor.requests.first)
+        #expect(request.executableURL.path == "/usr/bin/ssh")
+        #expect(request.arguments.containsSubsequence(["-F", "/dev/null"]))
+        #expect(request.arguments.containsSubsequence(["-o", "StrictHostKeyChecking=yes"]))
+        #expect(request.arguments.containsSubsequence(["-p", "22"]))
+        #expect(request.arguments.containsSubsequence(["-l", "deploy"]))
+        #expect(request.arguments.suffix(2) == ["--", "production.example.com"])
+        #expect(!request.arguments.contains("-L"))
+        #expect(!request.arguments.contains("-R"))
+        #expect(!request.arguments.contains("-D"))
+
+        supervisor.reportReady(profileID: profile.id)
+
+        #expect(application.testConnectionOutcome(for: profile.id) == .succeeded)
+        #expect(supervisor.stoppedProfileIDs == [profile.id])
+        #expect(application.profiles.isEmpty)
+    }
+
+    @Test
+    func testConnectionDoesNotReplaceAnActiveProfilesOwnedProcess() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let profile = try makeProfile()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            processSupervisor: supervisor
+        )
+        try application.save(profile)
+        try application.start(profileID: profile.id)
+
+        #expect(throws: TunnelLifecycleError.profileAlreadyActive(profile.id)) {
+            try application.testConnection(profile)
+        }
+
+        #expect(supervisor.requests.count == 1)
+        #expect(application.state(of: profile.id) == .connecting)
+    }
+
+    @Test
+    func aSecondTestConnectionDoesNotReplaceTheTestAlreadyInProgress() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let profile = try makeProfile()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            processSupervisor: supervisor
+        )
+        try application.testConnection(profile)
+
+        #expect(throws: TunnelLifecycleError.testConnectionAlreadyInProgress(profile.id)) {
+            try application.testConnection(profile)
+        }
+
+        #expect(supervisor.requests.count == 1)
+        #expect(application.testConnectionOutcome(for: profile.id) == .testing)
+    }
+
+    @Test
+    func startingAProfileDoesNotReplaceItsTestConnectionInProgress() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let profile = try makeProfile()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            processSupervisor: supervisor
+        )
+        try application.save(profile)
+        try application.testConnection(profile)
+
+        #expect(throws: TunnelLifecycleError.testConnectionAlreadyInProgress(profile.id)) {
+            try application.start(profileID: profile.id)
+        }
+
+        #expect(supervisor.requests.count == 1)
+        #expect(application.testConnectionOutcome(for: profile.id) == .testing)
+        #expect(application.state(of: profile.id) == .stopped)
+    }
+
+    @Test
+    func passwordTestConnectionRequiresAStoredOrManuallySuppliedCredential() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let credentials = LifecycleCredentialStore()
+        let profile = try TunnelProfile(
+            displayName: "Password endpoint",
+            sshHostname: "password.example.com",
+            authenticationMethod: .password,
+            localForwards: [
+                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
+            ]
+        )
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            credentialStore: credentials,
+            processSupervisor: supervisor
+        )
+
+        #expect(throws: ProfileValidationError.passwordRequired) {
+            try application.testConnection(profile)
+        }
+        #expect(application.testConnectionOutcome(for: profile.id) == .needsAttention(
+            "Enter the SSH password."
+        ))
+        #expect(supervisor.requests.isEmpty)
+
+        try application.testConnection(profile, credential: "login-secret")
+        let request = try #require(supervisor.requests.first)
+        #expect(!request.arguments.contains(where: { $0.contains("login-secret") }))
+        #expect(request.arguments.containsSubsequence(["-o", "NumberOfPasswordPrompts=1"]))
+        supervisor.reportReady(profileID: profile.id)
+        #expect(application.testConnectionOutcome(for: profile.id) == .succeeded)
+    }
+
+    @Test
+    func testConnectionPresentsActionableAndTemporaryOpenSSHFailures() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let profile = try makeProfile()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            processSupervisor: supervisor
+        )
+
+        try application.testConnection(profile)
+        let request = try #require(supervisor.requests.last)
+        supervisor.reportFailure(
+            profileID: profile.id,
+            failure: SystemOpenSSHProcessSupervisor.interpretFailure(
+                diagnostic: "Host key verification failed.\n",
+                status: 255,
+                portForwards: request.portForwards
+            )
+        )
+        #expect(application.testConnectionOutcome(for: profile.id) == .needsAttention(
+            "The SSH Endpoint host key is not trusted. Verify its fingerprint and add it to "
+                + "known_hosts before retrying."
+        ))
+        #expect(application.testConnectionOutcome(for: profile.id)?.displayMessage ==
+            "Test Connection Needs Attention: The SSH Endpoint host key is not trusted. "
+                + "Verify its fingerprint and add it to known_hosts before retrying."
+        )
+
+        try application.testConnection(profile)
+        let retryRequest = try #require(supervisor.requests.last)
+        supervisor.reportFailure(
+            profileID: profile.id,
+            failure: SystemOpenSSHProcessSupervisor.interpretFailure(
+                diagnostic: "ssh: connect to host production.example.com port 22: "
+                    + "Connection timed out\n",
+                status: 255,
+                portForwards: retryRequest.portForwards
+            )
+        )
+        #expect(application.testConnectionOutcome(for: profile.id) == .temporaryFailure(
+            "ssh: connect to host production.example.com port 22: Connection timed out"
+        ))
+    }
+
+    @Test
+    func testConnectionExplainsChangedHostKeysAndUnavailablePrivateKeys() throws {
+        let request = SSHProcessRequest(
+            profile: try makeProfile(),
+            allowsInteraction: true,
+            includesPortForwards: false
+        )
+
+        let changedKey = SystemOpenSSHProcessSupervisor.interpretFailure(
+            diagnostic: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\n",
+            status: 255,
+            portForwards: request.portForwards
+        )
+        #expect(changedKey == .needsAttention(
+            "The SSH Endpoint host key has changed. Verify it outside EZ Tunnel; "
+                + "automatic replacement is disabled."
+        ))
+
+        let unavailableKey = SystemOpenSSHProcessSupervisor.interpretFailure(
+            diagnostic: "Warning: Identity file /missing/key not accessible: "
+                + "No such file or directory.\n",
+            status: 255,
+            portForwards: request.portForwards
+        )
+        #expect(unavailableKey == .needsAttention(
+            "The selected private key file is unavailable. Choose a readable private key."
+        ))
+
+        let normalIdentityBeforeTimeout = SystemOpenSSHProcessSupervisor.interpretFailure(
+            diagnostic: "debug1: identity file /Users/example/.ssh/id_ed25519 type 3\n"
+                + "ssh: connect to host production.example.com port 22: Connection timed out\n",
+            status: 255,
+            portForwards: request.portForwards
+        )
+        #expect(normalIdentityBeforeTimeout == .temporary(
+            "ssh: connect to host production.example.com port 22: Connection timed out"
+        ))
+    }
+
+    @Test
     func startingAProfileLaunchesOneOwnedOpenSSHProcessAndBecomesConnectedOnlyWhenReady() throws {
         let supervisor = RecordingSSHProcessSupervisor()
         let profile = try makeProfile()
@@ -513,4 +717,14 @@ private final class LifecyclePersistence: ProfilePersistence {
     private var data: Data?
     func load() throws -> Data? { data }
     func save(_ data: Data) throws { self.data = data }
+}
+
+private final class LifecycleCredentialStore: SSHCredentialStore {
+    private var credentials = [SSHCredentialKey: String]()
+
+    func credential(for key: SSHCredentialKey) throws -> String? { credentials[key] }
+    func setCredential(_ credential: String, for key: SSHCredentialKey) throws {
+        credentials[key] = credential
+    }
+    func removeCredential(for key: SSHCredentialKey) throws { credentials[key] = nil }
 }

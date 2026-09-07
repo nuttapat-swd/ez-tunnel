@@ -6,6 +6,7 @@ import EZTunnelCore
 final class ApplicationModel: ObservableObject {
     @Published private(set) var profiles: [TunnelProfile]
     @Published private(set) var lifecycleStates = [UUID: TunnelLifecycleState]()
+    @Published private(set) var testConnectionOutcomes = [UUID: TestConnectionOutcome]()
     @Published var errorMessage: String?
 
     private let application: EZTunnelApplication
@@ -15,6 +16,9 @@ final class ApplicationModel: ObservableObject {
         self.profiles = application.profiles
         application.stateDidChange = { [weak self] profileID, state in
             self?.lifecycleStates[profileID] = state
+        }
+        application.testConnectionDidChange = { [weak self] profileID, outcome in
+            self?.testConnectionOutcomes[profileID] = outcome
         }
     }
 
@@ -48,6 +52,19 @@ final class ApplicationModel: ObservableObject {
 
     func state(of profileID: UUID) -> TunnelLifecycleState {
         lifecycleStates[profileID] ?? application.state(of: profileID)
+    }
+
+    func testConnection(_ profile: TunnelProfile, credential: String?) {
+        do {
+            try application.testConnection(profile, credential: credential)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func testConnectionOutcome(for profileID: UUID) -> TestConnectionOutcome? {
+        testConnectionOutcomes[profileID] ?? application.testConnectionOutcome(for: profileID)
     }
 
     func start(profileID: UUID) {
