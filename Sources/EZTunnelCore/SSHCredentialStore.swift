@@ -5,6 +5,16 @@ public enum SSHCredentialKind: String, CaseIterable, Sendable {
     case privateKeyPassphrase
 }
 
+extension SSHAuthenticationMethod {
+    var credentialKind: SSHCredentialKind? {
+        switch self {
+        case .systemDefault: nil
+        case .privateKey: .privateKeyPassphrase
+        case .password: .password
+        }
+    }
+}
+
 public struct SSHCredentialKey: Hashable, Sendable {
     public let profileID: UUID
     public let kind: SSHCredentialKind

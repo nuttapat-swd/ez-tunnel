@@ -256,8 +256,13 @@ public final class EZTunnelApplication {
         for profile: TunnelProfile,
         allowsInteraction: Bool
     ) throws {
+        let credential = try allowsInteraction ? profile.authenticationMethod.credentialKind.flatMap {
+            try credentialStore.credential(for: SSHCredentialKey(profileID: profile.id, kind: $0))
+        } : nil
         try processSupervisor.start(
-            SSHProcessRequest(profile: profile, allowsInteraction: allowsInteraction)
+            SSHProcessRequest(
+                profile: profile, allowsInteraction: allowsInteraction, credential: credential
+            )
         ) { [weak self] event in
             self?.handle(event, for: profile.id)
         }
@@ -309,16 +314,6 @@ public final class EZTunnelApplication {
         }
     }
 
-}
-
-private extension SSHAuthenticationMethod {
-    var credentialKind: SSHCredentialKind? {
-        switch self {
-        case .systemDefault: nil
-        case .privateKey: .privateKeyPassphrase
-        case .password: .password
-        }
-    }
 }
 
 private struct ProfileDocument: Codable {

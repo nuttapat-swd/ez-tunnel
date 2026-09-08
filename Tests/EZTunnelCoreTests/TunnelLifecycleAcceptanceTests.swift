@@ -5,6 +5,28 @@ import Testing
 @MainActor
 struct TunnelLifecycleAcceptanceTests {
     @Test
+    func manualStartUsesTheSelectedKeychainCredentialWithoutExposingItInArguments() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(),
+            credentialStore: LifecycleCredentialStore(),
+            processSupervisor: supervisor
+        )
+        let profile = try TunnelProfile(
+            sshHostname: "ssh.example.com",
+            authenticationMethod: .password,
+            localForwards: [LocalForward(name: "Web", listenPort: 8080, destinationPort: 80)]
+        )
+        try application.save(profile, credential: "synthetic-password")
+        try application.start(profileID: profile.id)
+        let request = try #require(supervisor.requests.first)
+        #expect(request.credential == "synthetic-password")
+        #expect(!request.arguments.joined().contains("synthetic-password"))
+        supervisor.reportReady(profileID: profile.id)
+        #expect(application.state(of: profile.id) == .connected)
+    }
+
+    @Test
     func testConnectionVerifiesTheDirectSSHEndpointWithoutOpeningPortForwards() throws {
         let supervisor = RecordingSSHProcessSupervisor()
         let profile = try makeProfile()
@@ -19,7 +41,7 @@ struct TunnelLifecycleAcceptanceTests {
         let request = try #require(supervisor.requests.first)
         #expect(request.executableURL.path == "/usr/bin/ssh")
         #expect(request.arguments.containsSubsequence(["-F", "/dev/null"]))
-        #expect(request.arguments.containsSubsequence(["-o", "StrictHostKeyChecking=yes"]))
+        #expect(request.arguments.containsSubsequence(["-o", "StrictHostKeyChecking=ask"]))
         #expect(request.arguments.containsSubsequence(["-p", "22"]))
         #expect(request.arguments.containsSubsequence(["-l", "deploy"]))
         #expect(request.arguments.suffix(2) == ["--", "production.example.com"])
@@ -257,7 +279,7 @@ struct TunnelLifecycleAcceptanceTests {
         #expect(supervisor.requests[0].arguments == [
             "-v", "-N",
             "-F", "/dev/null",
-            "-o", "StrictHostKeyChecking=yes",
+            "-o", "StrictHostKeyChecking=ask",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
@@ -449,6 +471,7 @@ struct TunnelLifecycleAcceptanceTests {
         #expect(supervisor.requests.count == 2)
         #expect(application.state(of: profile.id) == .reconnecting)
         #expect(supervisor.requests[1].arguments.contains("BatchMode=yes"))
+        #expect(supervisor.requests[1].arguments.contains("StrictHostKeyChecking=yes"))
         supervisor.reportReady(profileID: profile.id)
         #expect(application.state(of: profile.id) == .connected)
     }
