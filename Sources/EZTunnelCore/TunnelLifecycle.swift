@@ -59,11 +59,7 @@ public struct SSHProcessRequest: Sendable {
         self.credential = credential
         self.allowsInteraction = allowsInteraction
         self.endpoint = "\(profile.sshHostname.rawValue):\(profile.sshPort.rawValue)"
-        switch profile.authenticationMethod {
-        case .systemDefault: self.credentialKind = nil
-        case .password: self.credentialKind = .password
-        case .privateKey: self.credentialKind = .privateKeyPassphrase
-        }
+        self.credentialKind = profile.authenticationMethod.credentialKind
         let requestedPortForwards = includesPortForwards ? profile.portForwards : []
         self.portForwards = requestedPortForwards.map {
             SSHPortForwardDescriptor(

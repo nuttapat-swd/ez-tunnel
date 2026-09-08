@@ -316,16 +316,6 @@ public final class EZTunnelApplication {
 
 }
 
-private extension SSHAuthenticationMethod {
-    var credentialKind: SSHCredentialKind? {
-        switch self {
-        case .systemDefault: nil
-        case .privateKey: .privateKeyPassphrase
-        case .password: .password
-        }
-    }
-}
-
 private struct ProfileDocument: Codable {
     static let currentSchemaVersion = 4
 

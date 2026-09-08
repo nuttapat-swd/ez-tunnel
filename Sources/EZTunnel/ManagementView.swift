@@ -17,6 +17,15 @@ struct ManagementView: View {
                     Text(profile.displayName.rawValue).font(.headline)
                     Text(model.state(of: profile.id).displayName)
                         .foregroundStyle(.secondary)
+                    if case .needsAttention(let message) = model.state(of: profile.id) {
+                        Label(
+                            message,
+                            systemImage: isHostKeySecurityEvent(message)
+                                ? "exclamationmark.shield.fill" : "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    }
                     Text(
                         "\(profile.portForwards.count) "
                             + (profile.portForwards.count == 1
@@ -225,6 +234,10 @@ struct ManagementView: View {
         case .succeeded: .green
         case .needsAttention, .temporaryFailure: .red
         }
+    }
+
+    private func isHostKeySecurityEvent(_ message: String) -> Bool {
+        message.localizedCaseInsensitiveContains("host key has changed")
     }
 
 }
