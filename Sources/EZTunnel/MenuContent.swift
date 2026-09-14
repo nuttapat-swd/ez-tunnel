@@ -1,6 +1,6 @@
-import SwiftUI
 import EZTunnelAppSupport
 import EZTunnelCore
+import SwiftUI
 
 struct MenuContent: View {
     @ObservedObject var model: ApplicationModel
@@ -31,6 +31,7 @@ struct MenuContent: View {
 
     private func menuTitle(for profile: TunnelProfile) -> String {
         "\(model.actionTitle(profileID: profile.id)) \(profile.displayName.rawValue)"
+            + " — \(model.state(of: profile.id).displayName)"
     }
 
     private func showManagementWindow() {

@@ -43,6 +43,7 @@ public final class EZTunnelApplication {
     private var lifecycleStates = [UUID: TunnelLifecycleState]()
     private var retryAttempts = [UUID: Int]()
     private var scheduledRetries = [UUID: UUID]()
+    private var lifecycleAttemptIDs = [UUID: UUID]()
     private var testConnectionOutcomes = [UUID: TestConnectionOutcome]()
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -100,18 +101,23 @@ public final class EZTunnelApplication {
         }
         // Only touch the selected kind so changing authentication methods can
         // neither read nor overwrite a secret belonging to another kind.
-        let credentialKeys = activeCredentialKey.map { [$0] } ?? SSHCredentialKind.allCases.map {
-            SSHCredentialKey(profileID: profile.id, kind: $0)
-        }
+        let credentialKeys =
+            activeCredentialKey.map { [$0] }
+            ?? SSHCredentialKind.allCases.map {
+                SSHCredentialKey(profileID: profile.id, kind: $0)
+            }
         let previousCredentials = try Dictionary(
             uniqueKeysWithValues: credentialKeys.map { key in
                 (key, try credentialStore.credential(for: key))
             }
         )
-        let previousActiveCredential = activeCredentialKey.flatMap { previousCredentials[$0] ?? nil }
+        let previousActiveCredential = activeCredentialKey.flatMap {
+            previousCredentials[$0] ?? nil
+        }
         if profile.authenticationMethod == .password,
-           suppliedCredential?.isEmpty != false,
-           previousActiveCredential == nil {
+            suppliedCredential?.isEmpty != false,
+            previousActiveCredential == nil
+        {
             throw ProfileValidationError.passwordRequired
         }
         var updatedProfiles = profiles
@@ -123,7 +129,8 @@ public final class EZTunnelApplication {
         let data = try encoder.encode(ProfileDocument(profiles: updatedProfiles))
         do {
             if let activeCredentialKey {
-                let desiredCredential = suppliedCredential?.isEmpty == false
+                let desiredCredential =
+                    suppliedCredential?.isEmpty == false
                     ? suppliedCredential
                     : previousActiveCredential
                 try setCredential(desiredCredential, for: activeCredentialKey)
@@ -220,6 +227,7 @@ public final class EZTunnelApplication {
 
     public func stop(profileID: UUID) {
         guard state(of: profileID) != .stopped else { return }
+        lifecycleAttemptIDs[profileID] = nil
         transition(profileID, to: .stopping)
         cancelRetry(for: profileID)
         processSupervisor.stop(profileID: profileID)
@@ -244,9 +252,13 @@ public final class EZTunnelApplication {
             retryAttempts[profileID] = nil
             transition(profileID, to: .connected)
         case .failed(.needsAttention(let message)):
+            lifecycleAttemptIDs[profileID] = nil
+            processSupervisor.stop(profileID: profileID)
             cancelRetry(for: profileID)
             transition(profileID, to: .needsAttention(message))
         case .failed(.temporary):
+            lifecycleAttemptIDs[profileID] = nil
+            processSupervisor.stop(profileID: profileID)
             transition(profileID, to: .reconnecting)
             scheduleRetry(for: profileID)
         }
@@ -256,14 +268,20 @@ public final class EZTunnelApplication {
         for profile: TunnelProfile,
         allowsInteraction: Bool
     ) throws {
-        let credential = try allowsInteraction ? profile.authenticationMethod.credentialKind.flatMap {
-            try credentialStore.credential(for: SSHCredentialKey(profileID: profile.id, kind: $0))
-        } : nil
+        let attemptID = UUID()
+        lifecycleAttemptIDs[profile.id] = attemptID
+        let credential =
+            try allowsInteraction
+            ? profile.authenticationMethod.credentialKind.flatMap {
+                try credentialStore.credential(
+                    for: SSHCredentialKey(profileID: profile.id, kind: $0))
+            } : nil
         try processSupervisor.start(
             SSHProcessRequest(
                 profile: profile, allowsInteraction: allowsInteraction, credential: credential
             )
         ) { [weak self] event in
+            guard self?.lifecycleAttemptIDs[profile.id] == attemptID else { return }
             self?.handle(event, for: profile.id)
         }
     }
@@ -274,12 +292,25 @@ public final class EZTunnelApplication {
         let attempt = retryAttempts[profileID, default: 0]
         retryAttempts[profileID] = attempt + 1
         let delay = backoff[min(attempt, backoff.count - 1)]
+        let retryAttemptID = UUID()
+        lifecycleAttemptIDs[profileID] = retryAttemptID
         scheduledRetries[profileID] = retryScheduler.schedule(after: delay) { [weak self] in
             guard let self, self.state(of: profileID) == .reconnecting,
-                  let profile = self.profiles.first(where: { $0.id == profileID }) else {
+                self.lifecycleAttemptIDs[profileID] == retryAttemptID,
+                let profile = self.profiles.first(where: { $0.id == profileID })
+            else {
                 return
             }
+            self.lifecycleAttemptIDs[profileID] = nil
             self.scheduledRetries[profileID] = nil
+            guard profile.authenticationMethod != .password else {
+                self.transition(
+                    profileID,
+                    to: .needsAttention(
+                        "Password authentication requires a manual start. Stop this Tunnel Profile, then start it again."
+                    ))
+                return
+            }
             do {
                 try self.startProcess(for: profile, allowsInteraction: false)
             } catch {
@@ -355,7 +386,7 @@ private struct LegacyTunnelProfile: Decodable {
                     name: localForward.name.rawValue,
                     listenPort: localForward.listenPort.rawValue,
                     destinationPort: localForward.destinationPort.rawValue
-                ),
+                )
             ]
         )
     }

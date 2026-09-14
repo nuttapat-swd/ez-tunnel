@@ -1,9 +1,219 @@
 import Foundation
 import Testing
+
 @testable import EZTunnelCore
 
 @MainActor
 struct TunnelLifecycleAcceptanceTests {
+    @Test
+    func retryWaitsForEveryForwardAndUsesTheLatestSavedProfile() throws {
+        let supervisor = DiagnosticSSHProcessSupervisor()
+        let scheduler = RecordingRetryScheduler()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(), processSupervisor: supervisor,
+            retryScheduler: scheduler
+        )
+        let profile = try makeProfile()
+        try application.save(profile)
+        try application.start(profileID: profile.id)
+        supervisor.receive(
+            "Entering interactive session\nLocal forwarding listening on 127.0.0.1 port 5432",
+            profileID: profile.id)
+        #expect(application.state(of: profile.id) == .connected)
+        let updated = try TunnelProfile(
+            id: profile.id, displayName: profile.displayName.rawValue,
+            sshHostname: "replacement.example.com",
+            portForwards: [
+                .local(
+                    name: "Web", listenPort: 8080, destinationHost: "web.internal",
+                    destinationPort: 80),
+                .remote(
+                    name: "Webhook", listenPort: 9000, destinationHost: "127.0.0.1",
+                    destinationPort: 9001),
+                .dynamic(name: "SOCKS", listenPort: 1080),
+            ]
+        )
+        try application.save(updated)
+        supervisor.fail(profileID: profile.id)
+        scheduler.runNext()
+        #expect(supervisor.latestRequest?.arguments.last == "replacement.example.com")
+        supervisor.receive(
+            "Entering interactive session\nLocal forwarding listening on 127.0.0.1 port 8080",
+            profileID: profile.id)
+        #expect(application.state(of: profile.id) == .reconnecting)
+        supervisor.receive(
+            "remote forward success for: listen 127.0.0.1:9000", profileID: profile.id)
+        #expect(application.state(of: profile.id) == .reconnecting)
+        supervisor.receive(
+            "Local forwarding listening on 127.0.0.1 port 1080", profileID: profile.id)
+        #expect(application.state(of: profile.id) == .connected)
+    }
+
+    @Test
+    func cancelledTimerCannotLaunchAnAttemptInANewerOutage() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let scheduler = RecordingRetryScheduler()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(), processSupervisor: supervisor,
+            retryScheduler: scheduler
+        )
+        let profile = try makeProfile()
+        try application.save(profile)
+        try application.start(profileID: profile.id)
+        supervisor.reportFailure(profileID: profile.id, failure: .temporary("Timeout"))
+        let oldTimer = try #require(scheduler.actions.values.first)
+        application.stop(profileID: profile.id)
+        try application.start(profileID: profile.id)
+        supervisor.reportFailure(profileID: profile.id, failure: .temporary("Network lost"))
+        oldTimer()
+        #expect(supervisor.requests.count == 2)
+        scheduler.runNext()
+        #expect(supervisor.requests.count == 3)
+    }
+
+    @Test
+    func passwordProfilePausesBeforeAnUnattendedRetry() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let scheduler = RecordingRetryScheduler()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(), credentialStore: LifecycleCredentialStore(),
+            processSupervisor: supervisor, retryScheduler: scheduler
+        )
+        let profile = try TunnelProfile(
+            sshHostname: "ssh.example.com", authenticationMethod: .password,
+            localForwards: [LocalForward(name: "Web", listenPort: 8080, destinationPort: 80)]
+        )
+        try application.save(profile, credential: "synthetic-password")
+        try application.start(profileID: profile.id)
+        supervisor.reportReady(profileID: profile.id)
+        supervisor.reportFailure(profileID: profile.id, failure: .temporary("Network lost"))
+        scheduler.runNext()
+        #expect(supervisor.requests.count == 1)
+        guard case .needsAttention(let message) = application.state(of: profile.id) else {
+            Issue.record("Password authentication requires manual interaction")
+            return
+        }
+        #expect(message.contains("manual"))
+        scheduler.runNext()
+        #expect(supervisor.ownedProfileIDs.isEmpty)
+    }
+
+    @Test
+    func retriesUseCappedBackoffAndResetAfterRecovery() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let scheduler = RecordingRetryScheduler()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(), processSupervisor: supervisor,
+            retryScheduler: scheduler
+        )
+        let profile = try makeProfile()
+        try application.save(profile)
+        try application.start(profileID: profile.id)
+        for (index, delay) in [1.0, 2, 5, 10, 30, 30, 30].enumerated() {
+            supervisor.reportFailure(profileID: profile.id, failure: .temporary("Network lost"))
+            #expect(application.state(of: profile.id) == .reconnecting)
+            #expect(supervisor.ownedProfileIDs.isEmpty)
+            #expect(scheduler.scheduledDelays.last == delay)
+            #expect(supervisor.requests.count == index + 1)
+            scheduler.runNext()
+            #expect(supervisor.requests.count == index + 2)
+            #expect(application.state(of: profile.id) == .reconnecting)
+            #expect(supervisor.requests.last?.allowsInteraction == false)
+            #expect(supervisor.requests.last?.credential == nil)
+        }
+        supervisor.reportReady(profileID: profile.id)
+        #expect(application.state(of: profile.id) == .connected)
+        supervisor.reportFailure(profileID: profile.id, failure: .temporary("Timeout"))
+        #expect(scheduler.scheduledDelays.last == 1)
+    }
+
+    @Test(arguments: ["Connecting", "Connected", "Reconnecting", "Needs Attention"])
+    func stopAndQuitCancelActiveIntentAndResources(from stateName: String) throws {
+        for quitting in [false, true] {
+            let supervisor = RecordingSSHProcessSupervisor()
+            let scheduler = RecordingRetryScheduler()
+            let application = try EZTunnelApplication(
+                persistence: LifecyclePersistence(), processSupervisor: supervisor,
+                retryScheduler: scheduler
+            )
+            let profile = try makeProfile()
+            try application.save(profile)
+            try application.start(profileID: profile.id)
+            switch stateName {
+            case "Connected": supervisor.reportReady(profileID: profile.id)
+            case "Reconnecting":
+                supervisor.reportFailure(profileID: profile.id, failure: .temporary("Timeout"))
+            case "Needs Attention":
+                supervisor.reportFailure(
+                    profileID: profile.id, failure: .needsAttention("Trust required"))
+            default: break
+            }
+            #expect(application.state(of: profile.id).displayName == stateName)
+            var states = [TunnelLifecycleState]()
+            application.stateDidChange = { _, state in states.append(state) }
+            if quitting { application.quit() } else { application.stop(profileID: profile.id) }
+            scheduler.runNext()
+            #expect(states == [.stopping, .stopped])
+            #expect(supervisor.ownedProfileIDs.isEmpty)
+            #expect(supervisor.requests.count == 1)
+            try application.start(profileID: profile.id)
+            #expect(application.state(of: profile.id) == .connecting)
+        }
+    }
+
+    @Test(arguments: [
+        "Bad configuration option: invalid", "Could not resolve hostname missing",
+        "bind: Address already in use", "Permission denied (publickey)",
+        "Host key verification failed", "REMOTE HOST IDENTIFICATION HAS CHANGED",
+        "Identity file /missing not accessible",
+    ])
+    func interventionFailuresPauseRetriesAndExplainTheProblem(diagnostic: String) throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let scheduler = RecordingRetryScheduler()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(), processSupervisor: supervisor,
+            retryScheduler: scheduler
+        )
+        let profile = try makeProfile()
+        try application.save(profile)
+        try application.start(profileID: profile.id)
+        supervisor.reportFailure(profileID: profile.id, failure: .temporary("Timeout"))
+        scheduler.runNext()
+        let failure = SystemOpenSSHProcessSupervisor.interpretFailure(
+            diagnostic: diagnostic, status: 255, portForwards: []
+        )
+        supervisor.reportFailure(profileID: profile.id, failure: failure)
+        guard case .needsAttention(let message) = application.state(of: profile.id) else {
+            Issue.record("An intervention failure must pause automatic attempts")
+            return
+        }
+        #expect(!message.isEmpty)
+        scheduler.runNext()
+        #expect(supervisor.requests.count == 2)
+        #expect(supervisor.ownedProfileIDs.isEmpty)
+        #expect(throws: TunnelLifecycleError.profileAlreadyActive(profile.id)) {
+            try application.start(profileID: profile.id)
+        }
+    }
+
+    @Test
+    func lateEventsFromStoppedAttemptCannotChangeRestartedProfile() throws {
+        let supervisor = RecordingSSHProcessSupervisor()
+        let application = try EZTunnelApplication(
+            persistence: LifecyclePersistence(), processSupervisor: supervisor
+        )
+        let profile = try makeProfile()
+        try application.save(profile)
+        try application.start(profileID: profile.id)
+        let oldHandler = try #require(supervisor.eventHandlers[profile.id])
+        application.stop(profileID: profile.id)
+        try application.start(profileID: profile.id)
+        oldHandler(.ready)
+        #expect(application.state(of: profile.id) == .connecting)
+        oldHandler(.failed(.needsAttention("Old failure")))
+        #expect(application.state(of: profile.id) == .connecting)
+    }
+
     @Test
     func manualStartUsesTheSelectedKeychainCredentialWithoutExposingItInArguments() throws {
         let supervisor = RecordingSSHProcessSupervisor()
@@ -122,7 +332,7 @@ struct TunnelLifecycleAcceptanceTests {
             sshHostname: "password.example.com",
             authenticationMethod: .password,
             localForwards: [
-                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
+                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80)
             ]
         )
         let application = try EZTunnelApplication(
@@ -134,9 +344,11 @@ struct TunnelLifecycleAcceptanceTests {
         #expect(throws: ProfileValidationError.passwordRequired) {
             try application.testConnection(profile)
         }
-        #expect(application.testConnectionOutcome(for: profile.id) == .needsAttention(
-            "Enter the SSH password."
-        ))
+        #expect(
+            application.testConnectionOutcome(for: profile.id)
+                == .needsAttention(
+                    "Enter the SSH password."
+                ))
         #expect(supervisor.requests.isEmpty)
 
         try application.testConnection(profile, credential: "login-secret")
@@ -166,12 +378,15 @@ struct TunnelLifecycleAcceptanceTests {
                 portForwards: request.portForwards
             )
         )
-        #expect(application.testConnectionOutcome(for: profile.id) == .needsAttention(
-            "The SSH Endpoint host key is not trusted. Verify its fingerprint and add it to "
-                + "known_hosts before retrying."
-        ))
-        #expect(application.testConnectionOutcome(for: profile.id)?.displayMessage ==
-            "Test Connection Needs Attention: The SSH Endpoint host key is not trusted. "
+        #expect(
+            application.testConnectionOutcome(for: profile.id)
+                == .needsAttention(
+                    "The SSH Endpoint host key is not trusted. Verify its fingerprint and add it to "
+                        + "known_hosts before retrying."
+                ))
+        #expect(
+            application.testConnectionOutcome(for: profile.id)?.displayMessage
+                == "Test Connection Needs Attention: The SSH Endpoint host key is not trusted. "
                 + "Verify its fingerprint and add it to known_hosts before retrying."
         )
 
@@ -186,9 +401,11 @@ struct TunnelLifecycleAcceptanceTests {
                 portForwards: retryRequest.portForwards
             )
         )
-        #expect(application.testConnectionOutcome(for: profile.id) == .temporaryFailure(
-            "ssh: connect to host production.example.com port 22: Connection timed out"
-        ))
+        #expect(
+            application.testConnectionOutcome(for: profile.id)
+                == .temporaryFailure(
+                    "ssh: connect to host production.example.com port 22: Connection timed out"
+                ))
     }
 
     @Test
@@ -204,10 +421,12 @@ struct TunnelLifecycleAcceptanceTests {
             status: 255,
             portForwards: request.portForwards
         )
-        #expect(changedKey == .needsAttention(
-            "The SSH Endpoint host key has changed. Verify it outside EZ Tunnel; "
-                + "automatic replacement is disabled."
-        ))
+        #expect(
+            changedKey
+                == .needsAttention(
+                    "The SSH Endpoint host key has changed. Verify it outside EZ Tunnel; "
+                        + "automatic replacement is disabled."
+                ))
 
         let unavailableKey = SystemOpenSSHProcessSupervisor.interpretFailure(
             diagnostic: "Warning: Identity file /missing/key not accessible: "
@@ -215,9 +434,11 @@ struct TunnelLifecycleAcceptanceTests {
             status: 255,
             portForwards: request.portForwards
         )
-        #expect(unavailableKey == .needsAttention(
-            "The selected private key file is unavailable. Choose a readable private key."
-        ))
+        #expect(
+            unavailableKey
+                == .needsAttention(
+                    "The selected private key file is unavailable. Choose a readable private key."
+                ))
 
         let normalIdentityBeforeTimeout = SystemOpenSSHProcessSupervisor.interpretFailure(
             diagnostic: "debug1: identity file /Users/example/.ssh/id_ed25519 type 3\n"
@@ -225,9 +446,11 @@ struct TunnelLifecycleAcceptanceTests {
             status: 255,
             portForwards: request.portForwards
         )
-        #expect(normalIdentityBeforeTimeout == .temporary(
-            "ssh: connect to host production.example.com port 22: Connection timed out"
-        ))
+        #expect(
+            normalIdentityBeforeTimeout
+                == .temporary(
+                    "ssh: connect to host production.example.com port 22: Connection timed out"
+                ))
     }
 
     @Test
@@ -253,7 +476,9 @@ struct TunnelLifecycleAcceptanceTests {
     }
 
     @Test
-    func openSSHArgumentsContainOnlyGeneratedEndpointAuthenticationForwardAndLifecycleOptions() throws {
+    func openSSHArgumentsContainOnlyGeneratedEndpointAuthenticationForwardAndLifecycleOptions()
+        throws
+    {
         let supervisor = RecordingSSHProcessSupervisor()
         let application = try EZTunnelApplication(
             persistence: LifecyclePersistence(),
@@ -276,20 +501,21 @@ struct TunnelLifecycleAcceptanceTests {
 
         try application.start(profileID: profile.id)
 
-        #expect(supervisor.requests[0].arguments == [
-            "-v", "-N",
-            "-F", "/dev/null",
-            "-o", "StrictHostKeyChecking=ask",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3",
-            "-p", "2222",
-            "-l", "deploy",
-            "-o", "IdentitiesOnly=yes", "-i", "/keys/id_ed25519",
-            "-L", "[::1]:15432:database.internal:5432",
-            "-L", "[::1]:18080:database.internal:8080",
-            "--", "ssh.example.com",
-        ])
+        #expect(
+            supervisor.requests[0].arguments == [
+                "-v", "-N",
+                "-F", "/dev/null",
+                "-o", "StrictHostKeyChecking=ask",
+                "-o", "ExitOnForwardFailure=yes",
+                "-o", "ServerAliveInterval=15",
+                "-o", "ServerAliveCountMax=3",
+                "-p", "2222",
+                "-l", "deploy",
+                "-o", "IdentitiesOnly=yes", "-i", "/keys/id_ed25519",
+                "-L", "[::1]:15432:database.internal:5432",
+                "-L", "[::1]:18080:database.internal:8080",
+                "--", "ssh.example.com",
+            ])
     }
 
     @Test
@@ -329,15 +555,18 @@ struct TunnelLifecycleAcceptanceTests {
         try application.start(profileID: profile.id)
 
         #expect(supervisor.requests.count == 1)
-        #expect(supervisor.requests[0].arguments.containsSubsequence(
-            ["-L", "127.0.0.1:15432:database.internal:5432"]
-        ))
-        #expect(supervisor.requests[0].arguments.containsSubsequence(
-            ["-R", "[::1]:19000:127.0.0.1:9000"]
-        ))
-        #expect(supervisor.requests[0].arguments.containsSubsequence(
-            ["-D", "127.0.0.1:1080"]
-        ))
+        #expect(
+            supervisor.requests[0].arguments.containsSubsequence(
+                ["-L", "127.0.0.1:15432:database.internal:5432"]
+            ))
+        #expect(
+            supervisor.requests[0].arguments.containsSubsequence(
+                ["-R", "[::1]:19000:127.0.0.1:9000"]
+            ))
+        #expect(
+            supervisor.requests[0].arguments.containsSubsequence(
+                ["-D", "127.0.0.1:1080"]
+            ))
 
         supervisor.reportReady(profileID: profile.id)
         #expect(application.state(of: profile.id) == .connected)
@@ -411,14 +640,16 @@ struct TunnelLifecycleAcceptanceTests {
 
         try application.start(profileID: profile.id)
 
-        #expect(supervisor.localListener(
-            address: "127.0.0.1", port: 15432,
-            routesToHost: "database.internal", port: 5432
-        ))
-        #expect(supervisor.remoteListener(
-            address: "::1", port: 19000,
-            routesToHost: "127.0.0.1", port: 9000
-        ))
+        #expect(
+            supervisor.localListener(
+                address: "127.0.0.1", port: 15432,
+                routesToHost: "database.internal", port: 5432
+            ))
+        #expect(
+            supervisor.remoteListener(
+                address: "::1", port: 19000,
+                routesToHost: "127.0.0.1", port: 9000
+            ))
         #expect(supervisor.dynamicListenerProvidesSOCKS(address: "127.0.0.1", port: 1080))
         #expect(supervisor.processCount == 1)
     }
@@ -439,9 +670,11 @@ struct TunnelLifecycleAcceptanceTests {
             failure: .needsAttention("Local Forward could not bind.")
         )
 
-        #expect(application.state(of: profile.id) == .needsAttention(
-            "Local Forward could not bind."
-        ))
+        #expect(
+            application.state(of: profile.id)
+                == .needsAttention(
+                    "Local Forward could not bind."
+                ))
         #expect(supervisor.requests.count == 1)
     }
 
@@ -532,7 +765,7 @@ struct TunnelLifecycleAcceptanceTests {
             sshHostname: "admin.example.com",
             destinationHost: "admin.internal",
             localForwards: [
-                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80),
+                LocalForward(name: "Web", listenPort: 8080, destinationPort: 80)
             ]
         )
         let application = try EZTunnelApplication(
@@ -577,14 +810,14 @@ struct TunnelLifecycleAcceptanceTests {
             sshUsername: "deploy",
             destinationHost: "database.internal",
             localForwards: [
-                LocalForward(name: "PostgreSQL", listenPort: 5432, destinationPort: 5432),
+                LocalForward(name: "PostgreSQL", listenPort: 5432, destinationPort: 5432)
             ]
         )
     }
 }
 
-private extension Array where Element: Equatable {
-    func containsSubsequence(_ candidate: [Element]) -> Bool {
+extension Array where Element: Equatable {
+    fileprivate func containsSubsequence(_ candidate: [Element]) -> Bool {
         indices.contains { start in
             let end = index(start, offsetBy: candidate.count, limitedBy: endIndex) ?? endIndex
             return end - start == candidate.count && Array(self[start..<end]) == candidate
@@ -598,7 +831,7 @@ private final class RecordingSSHProcessSupervisor: SSHProcessSupervising {
     var stoppedProfileIDs = [UUID]()
     var onStop: ((UUID) -> Void)?
     var ownedProfileIDs: Set<UUID> { Set(eventHandlers.keys) }
-    private var eventHandlers = [UUID: @MainActor @Sendable (SSHProcessEvent) -> Void]()
+    var eventHandlers = [UUID: @MainActor @Sendable (SSHProcessEvent) -> Void]()
 
     func start(
         _ request: SSHProcessRequest,
@@ -626,6 +859,7 @@ private final class RecordingSSHProcessSupervisor: SSHProcessSupervising {
 
 @MainActor
 private final class DiagnosticSSHProcessSupervisor: SSHProcessSupervising {
+    var latestRequest: SSHProcessRequest?
     private var trackers = [UUID: SSHProcessReadinessTracker]()
     private var handlers = [UUID: @MainActor @Sendable (SSHProcessEvent) -> Void]()
 
@@ -633,6 +867,7 @@ private final class DiagnosticSSHProcessSupervisor: SSHProcessSupervising {
         _ request: SSHProcessRequest,
         eventHandler: @escaping @MainActor @Sendable (SSHProcessEvent) -> Void
     ) throws {
+        latestRequest = request
         trackers[request.profileID] = SSHProcessReadinessTracker(
             portForwards: request.portForwards
         )
@@ -642,6 +877,10 @@ private final class DiagnosticSSHProcessSupervisor: SSHProcessSupervising {
     func stop(profileID: UUID) {
         trackers[profileID] = nil
         handlers[profileID] = nil
+    }
+
+    func fail(profileID: UUID) {
+        handlers[profileID]?(.failed(.temporary("Connection reset by peer")))
     }
 
     func receive(_ diagnostic: String, profileID: UUID) {
@@ -711,7 +950,7 @@ private final class ForwardingBehaviorSSHProcessSupervisor: SSHProcessSupervisin
 private final class RecordingRetryScheduler: TunnelRetryScheduling {
     var scheduledDelays = [TimeInterval]()
     var cancelledCount = 0
-    private var actions = [UUID: @MainActor @Sendable () -> Void]()
+    var actions = [UUID: @MainActor @Sendable () -> Void]()
 
     func schedule(
         after delay: TimeInterval,
