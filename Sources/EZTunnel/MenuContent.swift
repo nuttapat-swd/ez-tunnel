@@ -13,6 +13,11 @@ struct MenuContent: View {
                 model.toggle(profileID: profile.id)
             }
             .disabled(!model.canToggle(profileID: profile.id))
+            if model.canRestart(profileID: profile.id) {
+                Button("Restart Now — \(profile.displayName.rawValue)") {
+                    model.restart(profileID: profile.id)
+                }
+            }
         }
         if !model.profiles.isEmpty {
             Divider()
@@ -32,6 +37,7 @@ struct MenuContent: View {
     private func menuTitle(for profile: TunnelProfile) -> String {
         "\(model.actionTitle(profileID: profile.id)) \(profile.displayName.rawValue)"
             + " — \(model.state(of: profile.id).displayName)"
+            + (model.changedConfigurationIDs.contains(profile.id) ? " — Configuration Changed" : "")
     }
 
     private func showManagementWindow() {

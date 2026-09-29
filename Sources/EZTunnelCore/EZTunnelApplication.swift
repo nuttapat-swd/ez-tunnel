@@ -34,6 +34,7 @@ public enum TestConnectionOutcome: Equatable, Sendable {
 public final class EZTunnelApplication {
     public private(set) var profiles: [TunnelProfile]
     public var stateDidChange: (@MainActor (UUID, TunnelLifecycleState) -> Void)?
+    public var configurationChangedDidChange: (@MainActor (UUID, Bool) -> Void)?
     public var testConnectionDidChange: (@MainActor (UUID, TestConnectionOutcome) -> Void)?
 
     private let persistence: any ProfilePersistence
@@ -44,6 +45,8 @@ public final class EZTunnelApplication {
     private var retryAttempts = [UUID: Int]()
     private var scheduledRetries = [UUID: UUID]()
     private var lifecycleAttemptIDs = [UUID: UUID]()
+    private var attemptedProfiles = [UUID: TunnelProfile]()
+    private var notifiedConfigurationChanges = Set<UUID>()
     private var testConnectionOutcomes = [UUID: TestConnectionOutcome]()
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -147,10 +150,18 @@ public final class EZTunnelApplication {
             throw error
         }
         profiles = updatedProfiles
+        notifyConfigurationChange(for: profile.id)
     }
 
     public func state(of profileID: UUID) -> TunnelLifecycleState {
         lifecycleStates[profileID] ?? .stopped
+    }
+
+    public func configurationChanged(for profileID: UUID) -> Bool {
+        guard let attempted = attemptedProfiles[profileID],
+            let saved = profiles.first(where: { $0.id == profileID })
+        else { return false }
+        return attempted != saved
     }
 
     public func testConnectionOutcome(for profileID: UUID) -> TestConnectionOutcome? {
@@ -232,7 +243,14 @@ public final class EZTunnelApplication {
         cancelRetry(for: profileID)
         processSupervisor.stop(profileID: profileID)
         retryAttempts[profileID] = nil
+        attemptedProfiles[profileID] = nil
+        notifyConfigurationChange(for: profileID)
         transition(profileID, to: .stopped)
+    }
+
+    public func restart(profileID: UUID) throws {
+        stop(profileID: profileID)
+        try start(profileID: profileID)
     }
 
     public func quit() {
@@ -270,6 +288,8 @@ public final class EZTunnelApplication {
     ) throws {
         let attemptID = UUID()
         lifecycleAttemptIDs[profile.id] = attemptID
+        attemptedProfiles[profile.id] = profile
+        notifyConfigurationChange(for: profile.id)
         let credential =
             try allowsInteraction
             ? profile.authenticationMethod.credentialKind.flatMap {
@@ -322,6 +342,17 @@ public final class EZTunnelApplication {
     private func cancelRetry(for profileID: UUID) {
         guard let retryID = scheduledRetries.removeValue(forKey: profileID) else { return }
         retryScheduler.cancel(retryID)
+    }
+
+    private func notifyConfigurationChange(for profileID: UUID) {
+        let changed = configurationChanged(for: profileID)
+        guard changed != notifiedConfigurationChanges.contains(profileID) else { return }
+        if changed {
+            notifiedConfigurationChanges.insert(profileID)
+        } else {
+            notifiedConfigurationChanges.remove(profileID)
+        }
+        configurationChangedDidChange?(profileID, changed)
     }
 
     private func transition(_ profileID: UUID, to state: TunnelLifecycleState) {

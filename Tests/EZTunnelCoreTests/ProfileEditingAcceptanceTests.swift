@@ -1,10 +1,112 @@
 import Foundation
 import Testing
+
 @testable import EZTunnelAppSupport
 @testable import EZTunnelCore
 
 @MainActor
 struct ProfileEditingAcceptanceTests {
+    @Test
+    func editingEverySupportedFieldPersistsToDiskWithStableIdentities() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = FileProfilePersistence(
+            fileURL: directory.appendingPathComponent("profiles.json"))
+        let application = try EZTunnelApplication(persistence: persistence)
+        let original = try TunnelProfile(
+            displayName: "Original", sshHostname: "original.example.com",
+            portForwards: [
+                .local(
+                    name: "Local", listenPort: 8080, destinationHost: "web.internal",
+                    destinationPort: 80),
+                .remote(
+                    name: "Remote", listenPort: 9000, destinationHost: "localhost",
+                    destinationPort: 9001),
+                .dynamic(name: "Dynamic", listenPort: 1080),
+            ])
+        try application.save(original)
+        var draft = try #require(
+            TunnelProfileSelection.draft(selecting: original.id, from: application.profiles))
+        draft.displayName = "Edited"
+        draft.sshHostname = "edited.example.com"
+        draft.sshPort = "2222"
+        draft.sshUsername = "deploy"
+        draft.authenticationMethod = .privateKey
+        draft.privateKeyPath = "/fixture/id_ed25519"
+        draft.listenAddress = "::1"
+        draft.destinationHost = "edited.internal"
+        draft.localForwards[0].name = "Edited Local"
+        draft.localForwards[0].listenPort = "18080"
+        draft.localForwards[0].destinationPort = "8081"
+        draft.remoteForwards[0].name = "Edited Remote"
+        draft.remoteForwards[0].listenAddress = "::1"
+        draft.remoteForwards[0].listenPort = "19000"
+        draft.remoteForwards[0].destinationHost = "127.0.0.1"
+        draft.remoteForwards[0].destinationPort = "9002"
+        draft.dynamicForwards[0].name = "Edited SOCKS"
+        draft.dynamicForwards[0].listenAddress = "::1"
+        draft.dynamicForwards[0].listenPort = "1081"
+        let edited = try draft.makeProfile()
+        try application.save(edited)
+
+        let relaunched = try EZTunnelApplication(persistence: persistence)
+        let restored = try #require(relaunched.profiles.first)
+        #expect(restored == edited)
+        #expect(restored.id == original.id)
+        #expect(restored.portForwards.map(\.id) == original.portForwards.map(\.id))
+        #expect(relaunched.state(of: original.id) == .stopped)
+        #expect(!relaunched.configurationChanged(for: original.id))
+    }
+
+    @Test
+    func editingUsesCreationValidationAndExcludesItsOwnName() throws {
+        let persistence = EditingInMemoryPersistence()
+        let application = try EZTunnelApplication(persistence: persistence)
+        let original = try TunnelProfile(
+            displayName: "Web", sshHostname: "ssh.example.com",
+            portForwards: [.dynamic(name: "SOCKS", listenPort: 1080)])
+        let other = try TunnelProfile(
+            displayName: "Other", sshHostname: "other.example.com",
+            portForwards: [.dynamic(name: "SOCKS", listenPort: 1081)])
+        try application.save(original)
+        try application.save(other)
+        var valid = TunnelProfileDraft(profile: original)
+        valid.displayName = "WEB"
+        let updated = try valid.makeProfile()
+        try application.save(updated)
+        let savedData = persistence.data
+        let invalidEdits: [(inout TunnelProfileDraft) -> Void] = [
+            { $0.displayName = "other" },
+            { $0.sshHostname = "" },
+            { $0.sshPort = "0" },
+            { $0.dynamicForwards[0].listenAddress = "0.0.0.0" },
+            { $0.dynamicForwards[0].listenPort = "65536" },
+            { $0.dynamicForwards = [] },
+            { draft in
+                var forward = DynamicForwardDraft()
+                forward.name = "socks"
+                forward.listenPort = "1082"
+                draft.dynamicForwards.append(forward)
+            },
+            { draft in
+                var forward = DynamicForwardDraft()
+                forward.name = "Duplicate endpoint"
+                forward.listenPort = "1080"
+                draft.dynamicForwards.append(forward)
+            },
+        ]
+        for edit in invalidEdits {
+            var draft = valid
+            edit(&draft)
+            #expect(throws: ProfileValidationError.self) {
+                try application.save(draft.makeProfile())
+            }
+            #expect(application.profiles == [updated, other])
+            #expect(persistence.data == savedData)
+        }
+    }
+
     @Test
     func savedProfileCanBeEditedWithoutChangingItsIdentity() throws {
         let persistence = EditingInMemoryPersistence()
@@ -17,7 +119,7 @@ struct ProfileEditingAcceptanceTests {
             sshHostname: "old.example.com",
             destinationHost: "old.internal",
             localForwards: [
-                LocalForward(id: forwardID, name: "Web", listenPort: 8080, destinationPort: 80),
+                LocalForward(id: forwardID, name: "Web", listenPort: 8080, destinationPort: 80)
             ]
         )
         try application.save(original)
@@ -48,10 +150,11 @@ struct ProfileEditingAcceptanceTests {
         #expect(restored.id == profileID)
         #expect(restored.localForwards.first?.id == forwardID)
 
-        let visibleDraft = try #require(TunnelProfileSelection.draft(
-            selecting: profileID,
-            from: relaunched.profiles
-        ))
+        let visibleDraft = try #require(
+            TunnelProfileSelection.draft(
+                selecting: profileID,
+                from: relaunched.profiles
+            ))
         #expect(visibleDraft.profileID == profileID)
         #expect(visibleDraft.displayName == "Production edited")
         #expect(visibleDraft.sshHostname == "new.example.com")
