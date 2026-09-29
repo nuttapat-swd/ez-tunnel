@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 
 public enum TunnelLifecycleState: Equatable, Sendable {
     case stopped
@@ -172,10 +172,11 @@ struct SSHProcessReadinessTracker: Sendable {
             diagnostic.contains(
                 "remote forward success for: listen \(portForward.listenAddress):"
                     + "\(portForward.listenPort)"
-            ) || diagnostic.contains(
-                "remote forward success for: listen [\(portForward.listenAddress)]:"
-                    + "\(portForward.listenPort)"
             )
+                || diagnostic.contains(
+                    "remote forward success for: listen [\(portForward.listenAddress)]:"
+                        + "\(portForward.listenPort)"
+                )
         }
     }
 }
@@ -249,6 +250,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
     ]
 
     private final class OwnedProcess {
+        let id = UUID()
         let process: Process
         let standardError: Pipe
         let request: SSHProcessRequest
@@ -297,14 +299,18 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             request: request
         )
         var environment = ProcessInfo.processInfo.environment
-        for key in ["SSH_ASKPASS", "SSH_ASKPASS_PROMPT", "EZ_TUNNEL_SSH_CREDENTIAL_PIPE",
-                    "EZ_TUNNEL_SSH_CREDENTIAL_KIND", "EZ_TUNNEL_SSH_ENDPOINT"] {
+        for key in [
+            "SSH_ASKPASS", "SSH_ASKPASS_PROMPT", "EZ_TUNNEL_SSH_CREDENTIAL_PIPE",
+            "EZ_TUNNEL_SSH_CREDENTIAL_KIND", "EZ_TUNNEL_SSH_ENDPOINT",
+        ] {
             environment[key] = nil
         }
         environment["LC_ALL"] = "C"
         environment["SSH_ASKPASS_REQUIRE"] = request.allowsInteraction ? "force" : "never"
         if request.allowsInteraction {
-            let helperURL = askPassHelperURL ?? Bundle.main.executableURL!.deletingLastPathComponent()
+            let helperURL =
+                askPassHelperURL
+                ?? Bundle.main.executableURL!.deletingLastPathComponent()
                 .appendingPathComponent("EZTunnelAskPass")
             guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
                 throw SSHInteractionError.helperUnavailable
@@ -322,11 +328,14 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         configureProcess(process, request)
 
         let diagnosticBuffer = ownedProcess.diagnosticBuffer
+        let attemptID = ownedProcess.id
         standardError.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let output = diagnosticBuffer.readAvailable(from: handle)
             guard !output.isEmpty else { return }
             Task { @MainActor in
-                self?.receive(output, for: request.profileID, eventHandler: eventHandler)
+                self?.receive(
+                    output, for: request.profileID, attemptID: attemptID,
+                    eventHandler: eventHandler)
             }
         }
         process.terminationHandler = { [weak self] process in
@@ -336,6 +345,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             Task { @MainActor in
                 self?.processDidTerminate(
                     profileID: request.profileID,
+                    attemptID: attemptID,
                     status: status,
                     eventHandler: eventHandler
                 )
@@ -371,11 +381,13 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
     private func receive(
         _ output: String,
         for profileID: UUID,
+        attemptID: UUID,
         eventHandler: @escaping @MainActor @Sendable (SSHProcessEvent) -> Void
     ) {
-        guard let ownedProcess = processes[profileID] else { return }
+        guard let ownedProcess = processes[profileID], ownedProcess.id == attemptID else { return }
         if !ownedProcess.readyReported,
-           ownedProcess.readinessTracker.receive(ownedProcess.diagnosticBuffer.value) {
+            ownedProcess.readinessTracker.receive(ownedProcess.diagnosticBuffer.value)
+        {
             ownedProcess.readyReported = true
             eventHandler(.ready)
         }
@@ -383,10 +395,12 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
 
     private func processDidTerminate(
         profileID: UUID,
+        attemptID: UUID,
         status: Int32,
         eventHandler: @escaping @MainActor @Sendable (SSHProcessEvent) -> Void
     ) {
-        guard let ownedProcess = processes.removeValue(forKey: profileID) else { return }
+        guard let ownedProcess = processes[profileID], ownedProcess.id == attemptID else { return }
+        processes[profileID] = nil
         ownedProcess.standardError.fileHandleForReading.readabilityHandler = nil
         removeAskPassResources(ownedProcess.askPassResources)
         let diagnostic = ownedProcess.diagnosticBuffer.value
@@ -400,22 +414,24 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         ) {
             var message = SSHBindDiagnostics.message(for: forward)
             if forward.mode == .remote,
-               let profile = processes.values.first(where: { candidate in
-                   candidate.process.isRunning
-                       && candidate.request.endpoint == ownedProcess.request.endpoint
-                       && candidate.request.portForwards.contains { other in
-                           other.mode == .remote
-                               && other.listenAddress == forward.listenAddress
-                               && other.listenPort == forward.listenPort
-                               && candidate.readinessTracker.isReady(forwardID: other.id)
-                       }
-               }) {
+                let profile = processes.values.first(where: { candidate in
+                    candidate.process.isRunning
+                        && candidate.request.endpoint == ownedProcess.request.endpoint
+                        && candidate.request.portForwards.contains { other in
+                            other.mode == .remote
+                                && other.listenAddress == forward.listenAddress
+                                && other.listenPort == forward.listenPort
+                                && candidate.readinessTracker.isReady(forwardID: other.id)
+                        }
+                })
+            {
                 message += " Occupied by Tunnel Profile \(profile.request.profileName.rawValue)."
             } else if let owner = SSHBindDiagnostics.localOwner(of: forward) {
                 if let profile = processes.values.first(where: {
                     $0.process.processIdentifier == owner.pid && $0.process.isRunning
                 }) {
-                    message += " Occupied by Tunnel Profile \(profile.request.profileName.rawValue)."
+                    message +=
+                        " Occupied by Tunnel Profile \(profile.request.profileName.rawValue)."
                 } else {
                     message += " Occupied by \(owner.name) (PID \(owner.pid))."
                 }
@@ -434,8 +450,9 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
     private func makeAskPassResources(credential: String) throws -> AskPassResources {
         // OpenSSH askpass reads at most 1023 bytes and ends at the first newline.
         guard !credential.isEmpty, credential.utf8.count < 1024,
-              !credential.contains("\n"), !credential.contains("\r"),
-              !credential.contains("\0") else { throw SSHInteractionError.invalidCredential }
+            !credential.contains("\n"), !credential.contains("\r"),
+            !credential.contains("\0")
+        else { throw SSHInteractionError.invalidCredential }
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("ez-tunnel-askpass-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
@@ -511,7 +528,8 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         }
         if diagnostic.localizedCaseInsensitiveContains("no such identity")
             || (diagnostic.localizedCaseInsensitiveContains("Identity file")
-                && diagnostic.localizedCaseInsensitiveContains("not accessible")) {
+                && diagnostic.localizedCaseInsensitiveContains("not accessible"))
+        {
             return "The selected private key file is unavailable. Choose a readable private key."
         }
         if let forward = SSHBindDiagnostics.failingForward(in: diagnostic, forwards: portForwards) {
@@ -519,9 +537,10 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         }
         let lines = diagnostic.split(separator: "\n", omittingEmptySubsequences: true)
             .map(String.init)
-        let usefulLine = lines.last(where: { line in
-            Self.interventionMarkers.contains(where: line.localizedCaseInsensitiveContains)
-        }) ?? lines.last(where: { !$0.hasPrefix("debug") })
+        let usefulLine =
+            lines.last(where: { line in
+                Self.interventionMarkers.contains(where: line.localizedCaseInsensitiveContains)
+            }) ?? lines.last(where: { !$0.hasPrefix("debug") })
         return usefulLine ?? "OpenSSH exited with status \(status)."
     }
 
@@ -530,7 +549,8 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         message: String
     ) -> SSHProcessFailure {
         if diagnostic.localizedCaseInsensitiveContains("Identity file"),
-           diagnostic.localizedCaseInsensitiveContains("not accessible") {
+            diagnostic.localizedCaseInsensitiveContains("not accessible")
+        {
             return .needsAttention(message)
         }
         if Self.interventionMarkers.contains(
