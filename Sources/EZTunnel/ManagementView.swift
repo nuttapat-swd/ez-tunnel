@@ -1,7 +1,7 @@
-import SwiftUI
-import UniformTypeIdentifiers
 import EZTunnelAppSupport
 import EZTunnelCore
+import SwiftUI
+import UniformTypeIdentifiers
 
 struct ManagementView: View {
     @ObservedObject var model: ApplicationModel
@@ -17,6 +17,11 @@ struct ManagementView: View {
                     Text(profile.displayName.rawValue).font(.headline)
                     Text(model.state(of: profile.id).displayName)
                         .foregroundStyle(.secondary)
+                    if model.changedConfigurationIDs.contains(profile.id) {
+                        Label("Configuration Changed", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                     if case .needsAttention(let message) = model.state(of: profile.id) {
                         Label(
                             message,
@@ -31,7 +36,7 @@ struct ManagementView: View {
                             + (profile.portForwards.count == 1
                                 ? "Port Forward" : "Port Forwards")
                     )
-                        .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary)
                 }
                 .tag(profile.id)
             }
@@ -107,7 +112,8 @@ struct ManagementView: View {
                     ForEach($draft.remoteForwards) { $remoteForward in
                         VStack(alignment: .leading, spacing: 10) {
                             TextField("Name", text: $remoteForward.name)
-                            Picker("Remote listen address", selection: $remoteForward.listenAddress) {
+                            Picker("Remote listen address", selection: $remoteForward.listenAddress)
+                            {
                                 Text("127.0.0.1").tag("127.0.0.1")
                                 Text("::1").tag("::1")
                             }
@@ -132,7 +138,8 @@ struct ManagementView: View {
                     ForEach($draft.dynamicForwards) { $dynamicForward in
                         VStack(alignment: .leading, spacing: 10) {
                             TextField("Name", text: $dynamicForward.name)
-                            Picker("Local listen address", selection: $dynamicForward.listenAddress) {
+                            Picker("Local listen address", selection: $dynamicForward.listenAddress)
+                            {
                                 Text("127.0.0.1").tag("127.0.0.1")
                                 Text("::1").tag("::1")
                             }
@@ -183,14 +190,30 @@ struct ManagementView: View {
                 .keyboardShortcut(.defaultAction)
 
                 if let selectedProfileID {
+                    if model.changedConfigurationIDs.contains(selectedProfileID) {
+                        Text(
+                            "Configuration Changed. Saved changes apply on restart or the next reconnect."
+                        )
+                        .foregroundStyle(.secondary)
+                    }
                     Button("\(model.actionTitle(profileID: selectedProfileID)) Tunnel Profile") {
                         model.toggle(profileID: selectedProfileID)
                     }
                     .disabled(!model.canToggle(profileID: selectedProfileID))
+                    if model.canRestart(profileID: selectedProfileID) {
+                        Button("Restart Now") {
+                            model.restart(profileID: selectedProfileID)
+                        }
+                        .help(
+                            "Restart using the latest saved Tunnel Profile. Unsaved edits are not applied."
+                        )
+                    }
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle(selectedProfileID == nil ? "New Tunnel Profile" : "Edit Tunnel Profile")
+            .navigationTitle(
+                selectedProfileID == nil ? "New Tunnel Profile" : "Edit Tunnel Profile"
+            )
             .padding()
         }
         .fileImporter(
@@ -203,10 +226,12 @@ struct ManagementView: View {
             }
         }
         .onChange(of: selectedProfileID) { profileID in
-            guard let selectedDraft = TunnelProfileSelection.draft(
-                selecting: profileID,
-                from: model.profiles
-            ) else {
+            guard
+                let selectedDraft = TunnelProfileSelection.draft(
+                    selecting: profileID,
+                    from: model.profiles
+                )
+            else {
                 return
             }
             draft = selectedDraft

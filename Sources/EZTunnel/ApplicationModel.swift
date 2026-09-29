@@ -1,11 +1,12 @@
+import EZTunnelCore
 import Foundation
 import SwiftUI
-import EZTunnelCore
 
 @MainActor
 final class ApplicationModel: ObservableObject {
     @Published private(set) var profiles: [TunnelProfile]
     @Published private(set) var lifecycleStates = [UUID: TunnelLifecycleState]()
+    @Published private(set) var changedConfigurationIDs = Set<UUID>()
     @Published private(set) var testConnectionOutcomes = [UUID: TestConnectionOutcome]()
     @Published var errorMessage: String?
 
@@ -14,11 +15,22 @@ final class ApplicationModel: ObservableObject {
     init(application: EZTunnelApplication) {
         self.application = application
         self.profiles = application.profiles
+        self.changedConfigurationIDs = Set(
+            application.profiles.compactMap {
+                application.configurationChanged(for: $0.id) ? $0.id : nil
+            })
         application.stateDidChange = { [weak self] profileID, state in
             self?.lifecycleStates[profileID] = state
         }
         application.testConnectionDidChange = { [weak self] profileID, outcome in
             self?.testConnectionOutcomes[profileID] = outcome
+        }
+        application.configurationChangedDidChange = { [weak self] profileID, changed in
+            if changed {
+                self?.changedConfigurationIDs.insert(profileID)
+            } else {
+                self?.changedConfigurationIDs.remove(profileID)
+            }
         }
     }
 
@@ -78,6 +90,19 @@ final class ApplicationModel: ObservableObject {
 
     func stop(profileID: UUID) {
         application.stop(profileID: profileID)
+    }
+
+    func restart(profileID: UUID) {
+        do {
+            try application.restart(profileID: profileID)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func canRestart(profileID: UUID) -> Bool {
+        state(of: profileID) != .stopped && state(of: profileID) != .stopping
     }
 
     func toggle(profileID: UUID) {
