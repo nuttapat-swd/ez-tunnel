@@ -30,6 +30,11 @@ public enum TestConnectionOutcome: Equatable, Sendable {
     }
 }
 
+public enum ApplicationLaunch: Equatable, Sendable {
+    case userInitiated
+    case loginItem
+}
+
 @MainActor
 public final class EZTunnelApplication {
     public private(set) var profiles: [TunnelProfile]
@@ -41,6 +46,7 @@ public final class EZTunnelApplication {
     private let credentialStore: any SSHCredentialStore
     private let processSupervisor: any SSHProcessSupervising
     private let retryScheduler: any TunnelRetryScheduling
+    private let loginItemManager: any LoginItemManaging
     private var lifecycleStates = [UUID: TunnelLifecycleState]()
     private var retryAttempts = [UUID: Int]()
     private var scheduledRetries = [UUID: UUID]()
@@ -55,18 +61,21 @@ public final class EZTunnelApplication {
         persistence: any ProfilePersistence,
         credentialStore: any SSHCredentialStore = UnavailableSSHCredentialStore(),
         processSupervisor: (any SSHProcessSupervising)? = nil,
-        retryScheduler: (any TunnelRetryScheduling)? = nil
+        retryScheduler: (any TunnelRetryScheduling)? = nil,
+        loginItemManager: any LoginItemManaging = NoOpLoginItemManager()
     ) throws {
         self.persistence = persistence
         self.credentialStore = credentialStore
         self.processSupervisor = processSupervisor ?? SystemOpenSSHProcessSupervisor()
         self.retryScheduler = retryScheduler ?? SystemTunnelRetryScheduler()
+        self.loginItemManager = loginItemManager
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
         self.encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
         guard let data = try persistence.load() else {
             self.profiles = []
+            try loginItemManager.setEnabled(false)
             return
         }
         let header = try decoder.decode(ProfileDocumentHeader.self, from: data)
@@ -81,7 +90,7 @@ public final class EZTunnelApplication {
         case 3:
             loadedProfiles = try decoder.decode(LegacyVersionThreeProfileDocument.self, from: data)
                 .profiles.map { try $0.migrated() }
-        case ProfileDocument.currentSchemaVersion:
+        case 4, ProfileDocument.currentSchemaVersion:
             loadedProfiles = try decoder.decode(ProfileDocument.self, from: data).profiles
         default:
             throw ProfileStoreError.unsupportedSchemaVersion(header.schemaVersion)
@@ -94,6 +103,7 @@ public final class EZTunnelApplication {
             try ProfileValidator.validate(profile, against: loadedProfiles)
         }
         self.profiles = loadedProfiles
+        try loginItemManager.setEnabled(loadedProfiles.contains(where: \.autoStart))
     }
 
     public func save(_ profile: TunnelProfile, credential: String? = nil) throws {
@@ -130,7 +140,12 @@ public final class EZTunnelApplication {
             updatedProfiles.append(profile)
         }
         let data = try encoder.encode(ProfileDocument(profiles: updatedProfiles))
+        let wasLoginItemEnabled = profiles.contains(where: \.autoStart)
+        let shouldEnableLoginItem = updatedProfiles.contains(where: \.autoStart)
         do {
+            if shouldEnableLoginItem != wasLoginItemEnabled {
+                try loginItemManager.setEnabled(shouldEnableLoginItem)
+            }
             if let activeCredentialKey {
                 let desiredCredential =
                     suppliedCredential?.isEmpty == false
@@ -144,6 +159,9 @@ public final class EZTunnelApplication {
             }
             try persistence.save(data)
         } catch {
+            if shouldEnableLoginItem != wasLoginItemEnabled {
+                try? loginItemManager.setEnabled(wasLoginItemEnabled)
+            }
             for key in credentialKeys {
                 try? setCredential(previousCredentials[key] ?? nil, for: key)
             }
@@ -236,6 +254,22 @@ public final class EZTunnelApplication {
         }
     }
 
+    public func launch(_ launch: ApplicationLaunch) {
+        guard launch == .loginItem else { return }
+        for profile in profiles where profile.autoStart && state(of: profile.id) == .stopped {
+            if let error = unattendedStartError(for: profile) {
+                transition(profile.id, to: .needsAttention(error))
+                continue
+            }
+            transition(profile.id, to: .connecting)
+            do {
+                try startProcess(for: profile, allowsInteraction: false)
+            } catch {
+                transition(profile.id, to: .needsAttention(error.localizedDescription))
+            }
+        }
+    }
+
     public func stop(profileID: UUID) {
         guard state(of: profileID) != .stopped else { return }
         lifecycleAttemptIDs[profileID] = nil
@@ -323,12 +357,8 @@ public final class EZTunnelApplication {
             }
             self.lifecycleAttemptIDs[profileID] = nil
             self.scheduledRetries[profileID] = nil
-            guard profile.authenticationMethod != .password else {
-                self.transition(
-                    profileID,
-                    to: .needsAttention(
-                        "Password authentication requires a manual start. Stop this Tunnel Profile, then start it again."
-                    ))
+            if let error = self.unattendedStartError(for: profile) {
+                self.transition(profileID, to: .needsAttention(error))
                 return
             }
             do {
@@ -342,6 +372,11 @@ public final class EZTunnelApplication {
     private func cancelRetry(for profileID: UUID) {
         guard let retryID = scheduledRetries.removeValue(forKey: profileID) else { return }
         retryScheduler.cancel(retryID)
+    }
+
+    private func unattendedStartError(for profile: TunnelProfile) -> String? {
+        guard profile.authenticationMethod == .password else { return nil }
+        return "Password authentication requires a manual start. Stop this Tunnel Profile, then start it again."
     }
 
     private func notifyConfigurationChange(for profileID: UUID) {
@@ -379,7 +414,7 @@ public final class EZTunnelApplication {
 }
 
 private struct ProfileDocument: Codable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
     let schemaVersion: Int
     let profiles: [TunnelProfile]

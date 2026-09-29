@@ -22,6 +22,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
     public var sshUsername: SSHUsername?
     public var authenticationMethod: SSHAuthenticationMethod
     public var privateKeyPath: String?
+    public var autoStart: Bool
     public var listenAddress: LoopbackAddress
     public var destinationHost: DestinationHost
     public var localForwards: [LocalForward]
@@ -40,6 +41,30 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
             + dynamicForwards.map(PortForward.dynamicForward)
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, sshHostname, sshPort, sshUsername
+        case authenticationMethod, privateKeyPath, autoStart
+        case listenAddress, destinationHost, localForwards, remoteForwards, dynamicForwards
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        displayName = try container.decode(TunnelProfileName.self, forKey: .displayName)
+        sshHostname = try container.decode(SSHHostname.self, forKey: .sshHostname)
+        sshPort = try container.decode(PortNumber.self, forKey: .sshPort)
+        sshUsername = try container.decodeIfPresent(SSHUsername.self, forKey: .sshUsername)
+        authenticationMethod = try container.decode(
+            SSHAuthenticationMethod.self, forKey: .authenticationMethod)
+        privateKeyPath = try container.decodeIfPresent(String.self, forKey: .privateKeyPath)
+        autoStart = try container.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
+        listenAddress = try container.decode(LoopbackAddress.self, forKey: .listenAddress)
+        destinationHost = try container.decode(DestinationHost.self, forKey: .destinationHost)
+        localForwards = try container.decode([LocalForward].self, forKey: .localForwards)
+        remoteForwards = try container.decode([RemoteForward].self, forKey: .remoteForwards)
+        dynamicForwards = try container.decode([DynamicForward].self, forKey: .dynamicForwards)
+    }
+
     public init(
         id: UUID = UUID(),
         displayName: String? = nil,
@@ -48,6 +73,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
         sshUsername: String? = nil,
         authenticationMethod: SSHAuthenticationMethod = .systemDefault,
         privateKeyPath: String? = nil,
+        autoStart: Bool = false,
         listenAddress: String = "127.0.0.1",
         destinationHost: String = "127.0.0.1",
         localForwards: [LocalForward]
@@ -63,6 +89,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
         self.authenticationMethod = authenticationMethod
         let normalizedKeyPath = privateKeyPath?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.privateKeyPath = normalizedKeyPath?.isEmpty == false ? normalizedKeyPath : nil
+        self.autoStart = autoStart
         self.listenAddress = try LoopbackAddress(validating: listenAddress)
         let normalizedDestinationHost = destinationHost
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -86,6 +113,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
         sshUsername: String? = nil,
         authenticationMethod: SSHAuthenticationMethod = .systemDefault,
         privateKeyPath: String? = nil,
+        autoStart: Bool = false,
         portForwards: [PortForward]
     ) throws {
         self.id = id
@@ -99,6 +127,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
         self.authenticationMethod = authenticationMethod
         let normalizedKeyPath = privateKeyPath?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.privateKeyPath = normalizedKeyPath?.isEmpty == false ? normalizedKeyPath : nil
+        self.autoStart = autoStart
 
         let local = portForwards.compactMap(\.localConfiguration)
         if let first = local.first,

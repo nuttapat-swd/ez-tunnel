@@ -25,7 +25,7 @@ struct ApplicationAcceptanceTests {
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let serializedJSON = String(decoding: data, as: UTF8.self)
 
-        #expect(object["schemaVersion"] as? Int == 4)
+        #expect(object["schemaVersion"] as? Int == 5)
         #expect(object["profiles"] != nil)
         for runtimeField in ["runtimeState", "pid", "retryCount", "connectionStatus"] {
             #expect(!serializedJSON.contains("\"\(runtimeField)\""))
@@ -78,6 +78,24 @@ struct ApplicationAcceptanceTests {
         )
 
         #expect(application.profiles.first?.portForwards.map(\.mode) == [.local, .local])
+    }
+
+    @Test
+    func schemaVersionFourProfilesMigrateWithAutoStartDisabled() throws {
+        let profile = try makeProfile()
+        let encodedProfile = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile))
+        var legacyProfile = try #require(encodedProfile as? [String: Any])
+        legacyProfile.removeValue(forKey: "autoStart")
+        let data = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 4,
+            "profiles": [legacyProfile],
+        ])
+
+        let application = try EZTunnelApplication(
+            persistence: InMemoryProfilePersistence(data: data)
+        )
+
+        #expect(application.profiles.first?.autoStart == false)
     }
 
     @Test

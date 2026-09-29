@@ -39,7 +39,8 @@ final class ApplicationModel: ObservableObject {
             return ApplicationModel(
                 application: try EZTunnelApplication(
                     persistence: FileProfilePersistence.applicationSupport(),
-                    credentialStore: KeychainSSHCredentialStore()
+                    credentialStore: KeychainSSHCredentialStore(),
+                    loginItemManager: MacOSLoginItemManager()
                 )
             )
         } catch {
@@ -127,6 +128,10 @@ final class ApplicationModel: ObservableObject {
 
     func quit() {
         application.quit()
+    }
+
+    func launch(_ launch: ApplicationLaunch) {
+        application.launch(launch)
     }
 
     func managementWindowDidClose() {

@@ -9,6 +9,7 @@ public struct TunnelProfileDraft {
     public var sshUsername: String
     public var authenticationMethod: SSHAuthenticationMethod
     public var privateKeyPath: String
+    public var autoStart: Bool
     public var credential: String
     public var listenAddress: String
     public var destinationHost: String
@@ -24,6 +25,7 @@ public struct TunnelProfileDraft {
         self.sshUsername = ""
         self.authenticationMethod = .systemDefault
         self.privateKeyPath = ""
+        self.autoStart = false
         self.credential = ""
         self.listenAddress = "127.0.0.1"
         self.destinationHost = ""
@@ -40,6 +42,7 @@ public struct TunnelProfileDraft {
         self.sshUsername = profile.sshUsername?.rawValue ?? ""
         self.authenticationMethod = profile.authenticationMethod
         self.privateKeyPath = profile.privateKeyPath ?? ""
+        self.autoStart = profile.autoStart
         self.credential = ""
         self.listenAddress = profile.listenAddress.rawValue
         self.destinationHost = profile.destinationHost.rawValue
@@ -97,6 +100,7 @@ public struct TunnelProfileDraft {
             sshUsername: sshUsername,
             authenticationMethod: authenticationMethod,
             privateKeyPath: privateKeyPath,
+            autoStart: autoStart,
             portForwards: local + remote + dynamic
         )
     }
