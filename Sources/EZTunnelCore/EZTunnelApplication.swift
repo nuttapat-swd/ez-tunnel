@@ -49,6 +49,8 @@ public final class EZTunnelApplication {
     private let loginItemManager: any LoginItemManaging
     private let recoveryJournal: RecoveryJournal?
     private var recoveredLaunch = false
+    private var isSleeping = false
+    private var networkAvailable = true
     public private(set) var recoveryError: String?
     private var lifecycleStates = [UUID: TunnelLifecycleState]()
     private var retryAttempts = [UUID: Int]()
@@ -57,6 +59,7 @@ public final class EZTunnelApplication {
     private var attemptedProfiles = [UUID: TunnelProfile]()
     private var notifiedConfigurationChanges = Set<UUID>()
     private var testConnectionOutcomes = [UUID: TestConnectionOutcome]()
+    private var testConnectionAttemptIDs = [UUID: UUID]()
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
@@ -210,6 +213,8 @@ public final class EZTunnelApplication {
             throw error
         }
         let outcome = TestConnectionOutcome.testing
+        let attemptID = UUID()
+        testConnectionAttemptIDs[profileID] = attemptID
         transitionTestConnection(profileID, to: outcome)
         do {
             try processSupervisor.start(
@@ -220,7 +225,8 @@ public final class EZTunnelApplication {
                     credential: connectionCredential
                 )
             ) { [weak self] event in
-                guard let self else { return }
+                guard let self, self.testConnectionAttemptIDs[profileID] == attemptID else { return }
+                self.testConnectionAttemptIDs[profileID] = nil
                 let outcome: TestConnectionOutcome
                 switch event {
                 case .ready:
@@ -234,6 +240,7 @@ public final class EZTunnelApplication {
                 self.transitionTestConnection(profileID, to: outcome)
             }
         } catch {
+            testConnectionAttemptIDs[profileID] = nil
             let outcome = TestConnectionOutcome.needsAttention(error.localizedDescription)
             transitionTestConnection(profileID, to: outcome)
             throw error
@@ -252,6 +259,10 @@ public final class EZTunnelApplication {
         }
         try recoveryJournal?.setActive(profileID)
         transition(profileID, to: .connecting)
+        if isSleeping {
+            transition(profileID, to: .reconnecting)
+            return
+        }
         do {
             try startProcess(for: profile, allowsInteraction: true)
         } catch {
@@ -327,6 +338,7 @@ public final class EZTunnelApplication {
             stop(profileID: profileID)
         }
         for profileID in testConnectionOutcomes.keys where testConnectionOutcomes[profileID] == .testing {
+            testConnectionAttemptIDs[profileID] = nil
             processSupervisor.stop(profileID: profileID)
         }
         do {
@@ -337,6 +349,65 @@ public final class EZTunnelApplication {
 
     public func managementWindowDidClose() {
         // Active Profile intent belongs to the menu-bar application, not its window.
+    }
+
+    public func systemWillSleep() {
+        guard !isSleeping else { return }
+        isSleeping = true
+        networkAvailable = false
+        for profile in profiles where state(of: profile.id) != .stopped {
+            lifecycleAttemptIDs[profile.id] = nil
+            cancelRetry(for: profile.id)
+            if case .needsAttention = state(of: profile.id) { continue }
+            transition(profile.id, to: .reconnecting)
+        }
+        for id in testConnectionOutcomes.keys where testConnectionOutcomes[id] == .testing {
+            testConnectionAttemptIDs[id] = nil
+            transitionTestConnection(id, to: .temporaryFailure("Test Connection was interrupted by Mac sleep. Try again after wake."))
+        }
+    }
+
+    public func systemDidWake() {
+        guard isSleeping else { return }
+        // Keep callbacks and retries suspended until ownership-checked cleanup finishes.
+        let blocked = processSupervisor.recoverAfterWake()
+        for (id, message) in blocked where state(of: id) != .stopped {
+            transition(id, to: .needsAttention(message))
+        }
+        isSleeping = false
+        resumeWaitingProfiles()
+    }
+
+    public func networkAvailabilityChanged(_ available: Bool) {
+        guard networkAvailable != available else { return }
+        networkAvailable = available
+        guard !isSleeping else { return }
+        if available {
+            resumeWaitingProfiles()
+        } else {
+            for profile in profiles where state(of: profile.id) == .reconnecting {
+                lifecycleAttemptIDs[profile.id] = nil
+                cancelRetry(for: profile.id)
+                processSupervisor.stop(profileID: profile.id)
+            }
+        }
+    }
+
+    private func resumeWaitingProfiles() {
+        guard !isSleeping, networkAvailable else { return }
+        for profile in profiles where state(of: profile.id) == .reconnecting {
+            cancelRetry(for: profile.id)
+            retry(profile)
+        }
+    }
+
+    private func retry(_ profile: TunnelProfile) {
+        if let error = unattendedStartError(for: profile) {
+            transition(profile.id, to: .needsAttention(error))
+            return
+        }
+        do { try startProcess(for: profile, allowsInteraction: false) }
+        catch { transition(profile.id, to: .needsAttention(error.localizedDescription)) }
     }
 
     private func handle(_ event: SSHProcessEvent, for profileID: UUID) {
@@ -384,6 +455,7 @@ public final class EZTunnelApplication {
 
     private func scheduleRetry(for profileID: UUID) {
         cancelRetry(for: profileID)
+        guard !isSleeping, networkAvailable else { return }
         let backoff: [TimeInterval] = [1, 2, 5, 10, 30]
         let attempt = retryAttempts[profileID, default: 0]
         retryAttempts[profileID] = attempt + 1
@@ -399,15 +471,8 @@ public final class EZTunnelApplication {
             }
             self.lifecycleAttemptIDs[profileID] = nil
             self.scheduledRetries[profileID] = nil
-            if let error = self.unattendedStartError(for: profile) {
-                self.transition(profileID, to: .needsAttention(error))
-                return
-            }
-            do {
-                try self.startProcess(for: profile, allowsInteraction: false)
-            } catch {
-                self.transition(profileID, to: .needsAttention(error.localizedDescription))
-            }
+            guard !self.isSleeping, self.networkAvailable else { return }
+            self.retry(profile)
         }
     }
 

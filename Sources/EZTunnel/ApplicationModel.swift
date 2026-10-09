@@ -11,6 +11,7 @@ final class ApplicationModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let application: EZTunnelApplication
+    private var recoveryEvents: MacOSRecoveryEvents?
 
     init(application: EZTunnelApplication) {
         self.application = application
@@ -39,7 +40,7 @@ final class ApplicationModel: ObservableObject {
             let persistence = try FileProfilePersistence.applicationSupport()
             let recoveryJournal = try RecoveryJournal(persistence: FileProfilePersistence(
                 fileURL: persistence.fileURL.deletingLastPathComponent().appendingPathComponent("recovery.json")))
-            return ApplicationModel(
+            let model = ApplicationModel(
                 application: try EZTunnelApplication(
                     persistence: persistence,
                     credentialStore: KeychainSSHCredentialStore(),
@@ -47,6 +48,8 @@ final class ApplicationModel: ObservableObject {
                     recoveryJournal: recoveryJournal
                 )
             )
+            model.recoveryEvents = MacOSRecoveryEvents(application: model.application)
+            return model
         } catch {
             let fallback = try! EZTunnelApplication(persistence: UnavailablePersistence())
             let model = ApplicationModel(application: fallback)
@@ -132,6 +135,7 @@ final class ApplicationModel: ObservableObject {
     }
 
     func quit() {
+        recoveryEvents?.stop()
         application.quit()
     }
 
