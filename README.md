@@ -40,6 +40,14 @@ Missing processes, reused PIDs, and mismatched ownership are left alone. If a ve
 child cannot be safely closed, its Profile pauses in **Needs Attention** and the
 journal entry is retained, including across quit, for a later cleanup attempt.
 
+Mac sleep preserves Active intent and saved auto-start choices. On wake, the same
+ownership checks close old tunnel processes before recovery starts a fresh OpenSSH
+connection with every Port Forward from the latest saved Tunnel Profile. Recovery
+waits for a usable network path; temporary failures resume backoff retries, while
+failures requiring intervention pause in **Needs Attention**. Profiles that were
+Stopped remain Stopped. macOS network-path availability does not guarantee that the
+SSH Endpoint is reachable, so server outages still use the normal retry policy.
+
 Each Tunnel Profile stores its SSH hostname, port, optional username, and
 authentication method directly. Passwords and private-key passphrases are stored in
 macOS Keychain and are never written to profile JSON.
@@ -53,4 +61,4 @@ clears the badge.
 
 Following ADR 0008, connections use the profile's explicit SSH Endpoint and ignore
 external OpenSSH configuration (`-F /dev/null`). The external SSH Host change
-criteria in issue #9 belong to the superseded alias-based design and do not apply.
+criteria in issues #9 and #12 belong to the superseded alias-based design and do not apply.

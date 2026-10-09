@@ -233,10 +233,12 @@ public protocol SSHProcessSupervising: AnyObject {
     ) throws
     func stop(profileID: UUID)
     func recoverStaleProcesses() -> [UUID: String]
+    func recoverAfterWake() -> [UUID: String]
 }
 
 extension SSHProcessSupervising {
     public func recoverStaleProcesses() -> [UUID: String] { [:] }
+    public func recoverAfterWake() -> [UUID: String] { recoverStaleProcesses() }
 }
 
 @MainActor
@@ -424,6 +426,25 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         for (profileID, recorded) in recoveryJournal.processes {
             do { try recover(recorded, for: profileID) }
             catch { blocked[profileID] = error.localizedDescription }
+        }
+        return blocked
+    }
+
+    public func recoverAfterWake() -> [UUID: String] {
+        guard recoveryJournal != nil else {
+            for id in Array(processes.keys) { stop(profileID: id) }
+            return [:]
+        }
+        // Detach callbacks first; cleanup uses the journal's verified identity and mux peer.
+        for owned in processes.values {
+            owned.standardError.fileHandleForReading.readabilityHandler = nil
+            owned.process.terminationHandler = nil
+        }
+        let blocked = recoverStaleProcesses()
+        for id in Array(processes.keys) where blocked[id] == nil {
+            if let owned = processes.removeValue(forKey: id) {
+                removeAskPassResources(owned.askPassResources)
+            }
         }
         return blocked
     }
