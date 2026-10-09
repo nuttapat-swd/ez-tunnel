@@ -1,5 +1,6 @@
 import SwiftUI
 import EZTunnelAppSupport
+import AppKit
 
 @main
 struct EZTunnelApp: App {
@@ -29,6 +30,14 @@ private enum AppDependencies {
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let isLoginItem = event?.eventID == kAEOpenApplication
+            && event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue
+                == keyAELaunchedAsLogInItem
+        AppDependencies.model.launch(isLoginItem ? .loginItem : .userInitiated)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         AppDependencies.model.quit()
     }

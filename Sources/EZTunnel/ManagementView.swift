@@ -75,6 +75,7 @@ struct ManagementView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Toggle("Start automatically at login", isOn: $draft.autoStart)
                 }
 
                 Section("Local Forwards") {
