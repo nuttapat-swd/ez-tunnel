@@ -23,6 +23,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
     public var authenticationMethod: SSHAuthenticationMethod
     public var privateKeyPath: String?
     public var autoStart: Bool
+    public var notificationsEnabled: Bool = true
     public var listenAddress: LoopbackAddress
     public var destinationHost: DestinationHost
     public var localForwards: [LocalForward]
@@ -43,7 +44,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, displayName, sshHostname, sshPort, sshUsername
-        case authenticationMethod, privateKeyPath, autoStart
+        case authenticationMethod, privateKeyPath, autoStart, notificationsEnabled
         case listenAddress, destinationHost, localForwards, remoteForwards, dynamicForwards
     }
 
@@ -58,6 +59,7 @@ public struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
             SSHAuthenticationMethod.self, forKey: .authenticationMethod)
         privateKeyPath = try container.decodeIfPresent(String.self, forKey: .privateKeyPath)
         autoStart = try container.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
+        notificationsEnabled = try container.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
         listenAddress = try container.decode(LoopbackAddress.self, forKey: .listenAddress)
         destinationHost = try container.decode(DestinationHost.self, forKey: .destinationHost)
         localForwards = try container.decode([LocalForward].self, forKey: .localForwards)

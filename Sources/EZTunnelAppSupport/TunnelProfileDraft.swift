@@ -10,6 +10,7 @@ public struct TunnelProfileDraft {
     public var authenticationMethod: SSHAuthenticationMethod
     public var privateKeyPath: String
     public var autoStart: Bool
+    public var notificationsEnabled: Bool
     public var credential: String
     public var listenAddress: String
     public var destinationHost: String
@@ -26,6 +27,7 @@ public struct TunnelProfileDraft {
         self.authenticationMethod = .systemDefault
         self.privateKeyPath = ""
         self.autoStart = false
+        self.notificationsEnabled = true
         self.credential = ""
         self.listenAddress = "127.0.0.1"
         self.destinationHost = ""
@@ -43,6 +45,7 @@ public struct TunnelProfileDraft {
         self.authenticationMethod = profile.authenticationMethod
         self.privateKeyPath = profile.privateKeyPath ?? ""
         self.autoStart = profile.autoStart
+        self.notificationsEnabled = profile.notificationsEnabled
         self.credential = ""
         self.listenAddress = profile.listenAddress.rawValue
         self.destinationHost = profile.destinationHost.rawValue
@@ -92,7 +95,7 @@ public struct TunnelProfileDraft {
         }
         let remote = try remoteForwards.map { try $0.makePortForward() }
         let dynamic = try dynamicForwards.map { try $0.makePortForward() }
-        return try TunnelProfile(
+        var profile = try TunnelProfile(
             id: profileID,
             displayName: displayName,
             sshHostname: sshHostname,
@@ -103,6 +106,8 @@ public struct TunnelProfileDraft {
             autoStart: autoStart,
             portForwards: local + remote + dynamic
         )
+        profile.notificationsEnabled = notificationsEnabled
+        return profile
     }
 }
 

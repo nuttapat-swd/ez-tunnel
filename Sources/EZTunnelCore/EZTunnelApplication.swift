@@ -48,6 +48,12 @@ public final class EZTunnelApplication {
     private let retryScheduler: any TunnelRetryScheduling
     private let loginItemManager: any LoginItemManaging
     private let recoveryJournal: RecoveryJournal?
+    private let notificationDelivery: any TunnelNotificationDelivering
+    private let notificationTime: @MainActor () -> Date
+    private var outageStarted = [UUID: Date]()
+    private var connectedSessions = Set<UUID>()
+    private var notifiedFailures = Set<UUID>()
+    private var pendingAutoStarts = Set<UUID>()
     private var recoveredLaunch = false
     private var isSleeping = false
     private var networkAvailable = true
@@ -69,9 +75,13 @@ public final class EZTunnelApplication {
         processSupervisor: (any SSHProcessSupervising)? = nil,
         retryScheduler: (any TunnelRetryScheduling)? = nil,
         loginItemManager: any LoginItemManaging = NoOpLoginItemManager(),
-        recoveryJournal: RecoveryJournal? = nil
+        recoveryJournal: RecoveryJournal? = nil,
+        notificationDelivery: any TunnelNotificationDelivering = NoOpTunnelNotificationDelivery(),
+        notificationTime: @escaping @MainActor () -> Date = { Date() }
     ) throws {
         self.persistence = persistence
+        self.notificationDelivery = notificationDelivery
+        self.notificationTime = notificationTime
         self.credentialStore = credentialStore
         self.processSupervisor = processSupervisor ?? SystemOpenSSHProcessSupervisor(recoveryJournal: recoveryJournal)
         self.recoveryJournal = recoveryJournal
@@ -184,9 +194,11 @@ public final class EZTunnelApplication {
     }
 
     public func configurationChanged(for profileID: UUID) -> Bool {
-        guard let attempted = attemptedProfiles[profileID],
+        guard var attempted = attemptedProfiles[profileID],
             let saved = profiles.first(where: { $0.id == profileID })
         else { return false }
+        // Notification preferences apply immediately and do not change the SSH attempt.
+        attempted.notificationsEnabled = saved.notificationsEnabled
         return attempted != saved
     }
 
@@ -272,6 +284,7 @@ public final class EZTunnelApplication {
     }
 
     public func launch(_ launch: ApplicationLaunch) {
+        notificationDelivery.prepare(allowPermissionPrompt: launch == .userInitiated)
         var recoveredIDs = Set<UUID>()
         if !recoveredLaunch {
             recoveredLaunch = true
@@ -286,6 +299,7 @@ public final class EZTunnelApplication {
             }
         }
         for profile in profiles where (recoveredIDs.contains(profile.id) || (launch == .loginItem && profile.autoStart)) && state(of: profile.id) == .stopped {
+            if launch == .loginItem && profile.autoStart { pendingAutoStarts.insert(profile.id) }
             do { try recoveryJournal?.setActive(profile.id) }
             catch {
                 recoveryError = error.localizedDescription
@@ -421,10 +435,13 @@ public final class EZTunnelApplication {
             processSupervisor.stop(profileID: profileID)
             cancelRetry(for: profileID)
             transition(profileID, to: .needsAttention(message))
-        case .failed(.temporary):
+        case .failed(.temporary(let message)):
             lifecycleAttemptIDs[profileID] = nil
             processSupervisor.stop(profileID: profileID)
             transition(profileID, to: .reconnecting)
+            if pendingAutoStarts.remove(profileID) != nil {
+                deliverNotification(profileID, message: "Auto-start could not connect: \(message) EZ Tunnel will retry automatically. Open EZ Tunnel to check the SSH Endpoint and network.")
+            }
             scheduleRetry(for: profileID)
         }
     }
@@ -498,8 +515,48 @@ public final class EZTunnelApplication {
     }
 
     private func transition(_ profileID: UUID, to state: TunnelLifecycleState) {
+        let previous = self.state(of: profileID)
         lifecycleStates[profileID] = state
+        switch state {
+        case .needsAttention(let message):
+            notifyFailure(profileID, message: "\(message) Open EZ Tunnel to resolve this condition, then restart the Tunnel Profile.")
+        case .reconnecting:
+            if connectedSessions.contains(profileID), outageStarted[profileID] == nil {
+                outageStarted[profileID] = notificationTime()
+            }
+        case .connected:
+            connectedSessions.insert(profileID)
+            if let started = outageStarted.removeValue(forKey: profileID),
+               notificationTime().timeIntervalSince(started) > 60,
+               let profile = profiles.first(where: { $0.id == profileID }), profile.notificationsEnabled {
+                notificationDelivery.deliver(TunnelNotification(profileID: profileID,
+                    title: "\(profile.displayName.rawValue) — Recovered",
+                    body: "The SSH connection and all Port Forwards are ready again."))
+            }
+            notifiedFailures.remove(profileID)
+            pendingAutoStarts.remove(profileID)
+        case .stopped, .stopping:
+            outageStarted[profileID] = nil
+            connectedSessions.remove(profileID)
+            if previous != .stopping {
+                notifiedFailures.remove(profileID)
+                pendingAutoStarts.remove(profileID)
+            }
+        case .connecting: break
+        }
         stateDidChange?(profileID, state)
+    }
+
+    private func notifyFailure(_ profileID: UUID, message: String) {
+        guard notifiedFailures.insert(profileID).inserted else { return }
+        pendingAutoStarts.remove(profileID)
+        deliverNotification(profileID, message: message)
+    }
+
+    private func deliverNotification(_ profileID: UUID, message: String) {
+        guard let profile = profiles.first(where: { $0.id == profileID }), profile.notificationsEnabled else { return }
+        notificationDelivery.deliver(TunnelNotification(profileID: profileID,
+            title: "\(profile.displayName.rawValue) — \(state(of: profileID).displayName)", body: message))
     }
 
     private func transitionTestConnection(
