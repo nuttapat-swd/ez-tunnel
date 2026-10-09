@@ -47,6 +47,9 @@ public final class EZTunnelApplication {
     private let processSupervisor: any SSHProcessSupervising
     private let retryScheduler: any TunnelRetryScheduling
     private let loginItemManager: any LoginItemManaging
+    private let recoveryJournal: RecoveryJournal?
+    private var recoveredLaunch = false
+    public private(set) var recoveryError: String?
     private var lifecycleStates = [UUID: TunnelLifecycleState]()
     private var retryAttempts = [UUID: Int]()
     private var scheduledRetries = [UUID: UUID]()
@@ -62,11 +65,13 @@ public final class EZTunnelApplication {
         credentialStore: any SSHCredentialStore = UnavailableSSHCredentialStore(),
         processSupervisor: (any SSHProcessSupervising)? = nil,
         retryScheduler: (any TunnelRetryScheduling)? = nil,
-        loginItemManager: any LoginItemManaging = NoOpLoginItemManager()
+        loginItemManager: any LoginItemManaging = NoOpLoginItemManager(),
+        recoveryJournal: RecoveryJournal? = nil
     ) throws {
         self.persistence = persistence
         self.credentialStore = credentialStore
-        self.processSupervisor = processSupervisor ?? SystemOpenSSHProcessSupervisor()
+        self.processSupervisor = processSupervisor ?? SystemOpenSSHProcessSupervisor(recoveryJournal: recoveryJournal)
+        self.recoveryJournal = recoveryJournal
         self.retryScheduler = retryScheduler ?? SystemTunnelRetryScheduler()
         self.loginItemManager = loginItemManager
         self.encoder = JSONEncoder()
@@ -245,6 +250,7 @@ public final class EZTunnelApplication {
         guard testConnectionOutcomes[profileID] != .testing else {
             throw TunnelLifecycleError.testConnectionAlreadyInProgress(profileID)
         }
+        try recoveryJournal?.setActive(profileID)
         transition(profileID, to: .connecting)
         do {
             try startProcess(for: profile, allowsInteraction: true)
@@ -255,8 +261,26 @@ public final class EZTunnelApplication {
     }
 
     public func launch(_ launch: ApplicationLaunch) {
-        guard launch == .loginItem else { return }
-        for profile in profiles where profile.autoStart && state(of: profile.id) == .stopped {
+        var recoveredIDs = Set<UUID>()
+        if !recoveredLaunch {
+            recoveredLaunch = true
+            recoveredIDs = recoveryJournal?.activeProfileIDs ?? []
+            let blocked = processSupervisor.recoverStaleProcesses()
+            for (id, message) in blocked where profiles.contains(where: { $0.id == id }) {
+                transition(id, to: .needsAttention(message))
+            }
+            for id in recoveredIDs where !profiles.contains(where: { $0.id == id }) && blocked[id] == nil {
+                do { try recoveryJournal?.stop(id) }
+                catch { recoveryError = error.localizedDescription }
+            }
+        }
+        for profile in profiles where (recoveredIDs.contains(profile.id) || (launch == .loginItem && profile.autoStart)) && state(of: profile.id) == .stopped {
+            do { try recoveryJournal?.setActive(profile.id) }
+            catch {
+                recoveryError = error.localizedDescription
+                transition(profile.id, to: .needsAttention(error.localizedDescription))
+                continue
+            }
             if let error = unattendedStartError(for: profile) {
                 transition(profile.id, to: .needsAttention(error))
                 continue
@@ -276,6 +300,17 @@ public final class EZTunnelApplication {
         transition(profileID, to: .stopping)
         cancelRetry(for: profileID)
         processSupervisor.stop(profileID: profileID)
+        guard recoveryJournal?.processes[profileID] == nil else {
+            transition(profileID, to: .needsAttention(RecoveryError.previousProcessStillRunning.localizedDescription))
+            return
+        }
+        do { try recoveryJournal?.stop(profileID) }
+        catch {
+            recoveryError = error.localizedDescription
+            transition(profileID, to: .needsAttention(error.localizedDescription))
+            return
+        }
+        recoveryError = nil
         retryAttempts[profileID] = nil
         attemptedProfiles[profileID] = nil
         notifyConfigurationChange(for: profileID)
@@ -291,6 +326,13 @@ public final class EZTunnelApplication {
         for profileID in lifecycleStates.compactMap({ $0.value == .stopped ? nil : $0.key }) {
             stop(profileID: profileID)
         }
+        for profileID in testConnectionOutcomes.keys where testConnectionOutcomes[profileID] == .testing {
+            processSupervisor.stop(profileID: profileID)
+        }
+        do {
+            if recoveryJournal?.processes.isEmpty != false { try recoveryJournal?.clear() }
+        }
+        catch { recoveryError = error.localizedDescription }
     }
 
     public func managementWindowDidClose() {

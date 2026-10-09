@@ -232,6 +232,11 @@ public protocol SSHProcessSupervising: AnyObject {
         eventHandler: @escaping @MainActor @Sendable (SSHProcessEvent) -> Void
     ) throws
     func stop(profileID: UUID)
+    func recoverStaleProcesses() -> [UUID: String]
+}
+
+extension SSHProcessSupervising {
+    public func recoverStaleProcesses() -> [UUID: String] { [:] }
 }
 
 @MainActor
@@ -272,11 +277,23 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
     private var processes = [UUID: OwnedProcess]()
     private var configureProcess: (Process, SSHProcessRequest) -> Void = { _, _ in }
     private var askPassHelperURL: URL?
+    private let recoveryJournal: RecoveryJournal?
+    private let recoveryOperatingSystem: any RecoveryProcessOperatingSystem
 
-    public init() {}
+    public init(recoveryJournal: RecoveryJournal? = nil) {
+        self.recoveryJournal = recoveryJournal
+        self.recoveryOperatingSystem = SystemRecoveryProcessOperatingSystem()
+    }
+
+    init(recoveryJournal: RecoveryJournal, recoveryOperatingSystem: any RecoveryProcessOperatingSystem) {
+        self.recoveryJournal = recoveryJournal
+        self.recoveryOperatingSystem = recoveryOperatingSystem
+    }
 
     // Substitute only the operating-system child process in acceptance tests.
     init(askPassHelperURL: URL, configureProcess: @escaping (Process, SSHProcessRequest) -> Void) {
+        self.recoveryJournal = nil
+        self.recoveryOperatingSystem = SystemRecoveryProcessOperatingSystem()
         self.askPassHelperURL = askPassHelperURL
         self.configureProcess = configureProcess
     }
@@ -285,10 +302,15 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
         _ request: SSHProcessRequest,
         eventHandler: @escaping @MainActor @Sendable (SSHProcessEvent) -> Void
     ) throws {
+        if let recorded = recoveryJournal?.processes[request.profileID] {
+            try recover(recorded, for: request.profileID)
+        }
         let process = Process()
         let standardError = Pipe()
         process.executableURL = request.executableURL
         process.arguments = request.arguments
+        let controlPath = "/tmp/ez-tunnel-\(getuid())-\(UUID().uuidString)"
+        process.arguments?.insert(contentsOf: ["-M", "-S", controlPath, "-o", "ControlPersist=no"], at: 0)
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = standardError
@@ -354,18 +376,35 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
 
         processes[request.profileID] = ownedProcess
         do {
+            // Persist the attempt token before spawning, covering a crash before
+            // the OS-assigned PID and start time can be written.
+            try recoveryJournal?.record(
+                RecoveryProcess(pid: 0, startSeconds: 0, startMicroseconds: 0, controlPath: controlPath),
+                for: request.profileID)
             try process.run()
+            if let recoveryJournal, case .present(let identity) = recoveryOperatingSystem.inspect(pid: process.processIdentifier) {
+                try recoveryJournal.record(
+                    RecoveryProcess(pid: process.processIdentifier, startSeconds: identity.startSeconds,
+                                    startMicroseconds: identity.startMicroseconds, controlPath: controlPath),
+                    for: request.profileID)
+            } else if recoveryJournal != nil, process.isRunning {
+                throw CocoaError(.fileReadUnknown)
+            } else if !process.isRunning {
+                try recoveryJournal?.removeProcess(for: request.profileID)
+            }
         } catch {
-            processes[request.profileID] = nil
-            standardError.fileHandleForReading.readabilityHandler = nil
-            process.terminationHandler = nil
-            removeAskPassResources(ownedProcess.askPassResources)
+            stop(profileID: request.profileID)
             throw error
         }
     }
 
     public func stop(profileID: UUID) {
-        guard let ownedProcess = processes.removeValue(forKey: profileID) else { return }
+        guard let ownedProcess = processes.removeValue(forKey: profileID) else {
+            if let recorded = recoveryJournal?.processes[profileID] {
+                try? recover(recorded, for: profileID)
+            }
+            return
+        }
         ownedProcess.standardError.fileHandleForReading.readabilityHandler = nil
         ownedProcess.process.terminationHandler = nil
         if ownedProcess.process.isRunning {
@@ -376,6 +415,34 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
             ownedProcess.process.waitUntilExit()
         }
         removeAskPassResources(ownedProcess.askPassResources)
+        try? recoveryJournal?.removeProcess(for: profileID)
+    }
+
+    public func recoverStaleProcesses() -> [UUID: String] {
+        guard let recoveryJournal else { return [:] }
+        var blocked = [UUID: String]()
+        for (profileID, recorded) in recoveryJournal.processes {
+            do { try recover(recorded, for: profileID) }
+            catch { blocked[profileID] = error.localizedDescription }
+        }
+        return blocked
+    }
+
+    private func recover(_ recorded: RecoveryProcess, for profileID: UUID) throws {
+        let process = try recorded.pid == 0
+            ? recoveryOperatingSystem.findProcess(controlPath: recorded.controlPath) : recorded
+        if let process {
+            switch recoveryOperatingSystem.inspect(pid: process.pid) {
+            case .unavailable:
+                throw RecoveryError.inspectionUnavailable
+            case .present(let current) where current.matches(process):
+                guard recoveryOperatingSystem.closeTunnel(process) else {
+                    throw RecoveryError.previousProcessStillRunning
+                }
+            default: break
+            }
+        }
+        try recoveryJournal?.removeProcess(for: profileID)
     }
 
     private func receive(
@@ -401,6 +468,7 @@ public final class SystemOpenSSHProcessSupervisor: SSHProcessSupervising {
     ) {
         guard let ownedProcess = processes[profileID], ownedProcess.id == attemptID else { return }
         processes[profileID] = nil
+        try? recoveryJournal?.removeProcess(for: profileID)
         ownedProcess.standardError.fileHandleForReading.readabilityHandler = nil
         removeAskPassResources(ownedProcess.askPassResources)
         let diagnostic = ownedProcess.diagnosticBuffer.value

@@ -27,6 +27,19 @@ Profile definitions are stored as schema-versioned JSON at
 atomic file-writing option. Tunnel Profile JSON contains definitions only; runtime
 state is kept separately and is not part of the persisted profile schema.
 
+Active intent and child-process ownership are stored separately in `recovery.json`
+beside the profile definitions. A clean quit stops the children and clears this
+journal. Following a crash, either manual or login launch recovers Active Profiles
+using their current saved definitions without prompting for credentials. Password
+authentication and other failures requiring interaction pause in **Needs Attention**.
+
+Recovery verifies the process owner, executable, start time, and unique ControlPath
+before requesting shutdown through its OpenSSH control socket. The connected socket
+also verifies its peer PID; recovery never sends a signal to a PID read from disk.
+Missing processes, reused PIDs, and mismatched ownership are left alone. If a verified
+child cannot be safely closed, its Profile pauses in **Needs Attention** and the
+journal entry is retained, including across quit, for a later cleanup attempt.
+
 Each Tunnel Profile stores its SSH hostname, port, optional username, and
 authentication method directly. Passwords and private-key passphrases are stored in
 macOS Keychain and are never written to profile JSON.

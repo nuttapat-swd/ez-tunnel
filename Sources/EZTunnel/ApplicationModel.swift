@@ -36,11 +36,15 @@ final class ApplicationModel: ObservableObject {
 
     static func makeDefault() -> ApplicationModel {
         do {
+            let persistence = try FileProfilePersistence.applicationSupport()
+            let recoveryJournal = try RecoveryJournal(persistence: FileProfilePersistence(
+                fileURL: persistence.fileURL.deletingLastPathComponent().appendingPathComponent("recovery.json")))
             return ApplicationModel(
                 application: try EZTunnelApplication(
-                    persistence: FileProfilePersistence.applicationSupport(),
+                    persistence: persistence,
                     credentialStore: KeychainSSHCredentialStore(),
-                    loginItemManager: MacOSLoginItemManager()
+                    loginItemManager: MacOSLoginItemManager(),
+                    recoveryJournal: recoveryJournal
                 )
             )
         } catch {
@@ -91,6 +95,7 @@ final class ApplicationModel: ObservableObject {
 
     func stop(profileID: UUID) {
         application.stop(profileID: profileID)
+        errorMessage = application.recoveryError
     }
 
     func restart(profileID: UUID) {
@@ -132,6 +137,7 @@ final class ApplicationModel: ObservableObject {
 
     func launch(_ launch: ApplicationLaunch) {
         application.launch(launch)
+        errorMessage = application.recoveryError
     }
 
     func managementWindowDidClose() {
