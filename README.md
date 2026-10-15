@@ -12,6 +12,16 @@ Build and open the native application bundle:
 make run
 ```
 
+Build a release application bundle at `.build/EZ Tunnel.app`:
+
+```sh
+/bin/sh Scripts/build-app.sh release
+```
+
+The application icon is bundled from `Resources/AppIcon.icns`. After editing the
+source artwork in `Resources/AppIcon.png`, regenerate all macOS icon sizes with
+`/bin/sh Scripts/build-icon.sh` before building the app.
+
 Run verification:
 
 ```sh

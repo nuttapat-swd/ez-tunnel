@@ -12,6 +12,7 @@ app_bundle="$project_root/.build/EZ Tunnel.app"
 
 mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources"
 cp "$project_root/Resources/Info.plist" "$app_bundle/Contents/Info.plist"
+cp "$project_root/Resources/AppIcon.icns" "$app_bundle/Contents/Resources/AppIcon.icns"
 cp "$binary_directory/EZTunnel" "$app_bundle/Contents/MacOS/EZTunnel"
 chmod 755 "$app_bundle/Contents/MacOS/EZTunnel"
 cp "$binary_directory/EZTunnelAskPass" "$app_bundle/Contents/MacOS/EZTunnelAskPass"
