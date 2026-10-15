@@ -72,10 +72,17 @@ never prompts and uses the permission already granted in System Settings.
 
 Saved edits do not interrupt an Active Profile. **Configuration Changed** appears
 beside its lifecycle state when saved values differ from the current attempt.
-**Restart Now**, in the management window or menu bar, stops the owned process and
+**Restart Now**, in the management window, stops the owned process and
 applies the latest saved values. Automatic reconnect also uses those values;
 unsaved editor changes are not applied. Saving the original profile values again
 clears the badge.
+
+The menu bar keeps one status row per Tunnel Profile in saved order, with a
+colored indicator, display name, and lifecycle state. Connected is green and
+Stopped is neutral gray; state text remains visible. Click Stopped to start or
+an Active Profile to stop, including while Connecting, Reconnecting, or Needs
+Attention. Connecting… and Stopping… reflect operations in progress; Stopping
+disables the action. Restart Now is available only in the management window.
 
 Following ADR 0008, connections use the profile's explicit SSH Endpoint and ignore
 external OpenSSH configuration (`-F /dev/null`). The external SSH Host change

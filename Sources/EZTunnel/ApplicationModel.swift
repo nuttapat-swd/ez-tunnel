@@ -143,6 +143,13 @@ final class ApplicationModel: ObservableObject {
         state(of: profileID) != .stopping
     }
 
+    func menuTitle(for profile: TunnelProfile) -> String {
+        let state = state(of: profile.id)
+        let label = state.displayName + (state == .connecting || state == .stopping ? "…" : "")
+        return "\(profile.displayName.rawValue) — \(label)"
+            + (changedConfigurationIDs.contains(profile.id) ? " — Configuration Changed" : "")
+    }
+
     func quit() {
         recoveryEvents?.stop()
         application.quit()

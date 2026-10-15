@@ -77,7 +77,7 @@ New SSH host keys require explicit manual approval after showing host, key type,
 
 ## User experience and diagnostics
 
-The menu bar provides profile status and Start, Stop, Restart, and Open Management Window actions. The management window provides profile editing, Test Connection, import/export, diagnostics, and update controls.
+The menu bar provides one stable status toggle row per Tunnel Profile, plus Open Management Window and Quit. Each row shows a colored indicator, display name, and lifecycle state without a Start/Stop prefix. Connected uses green and Stopped neutral gray; state text remains visible alongside Configuration Changed when applicable. Clicking Stopped starts the profile; clicking Connected, Connecting, Reconnecting, or Needs Attention stops it. Connecting… and Stopping… reflect actual lifecycle transitions, and Stopping disables the action. State changes do not add or reorder rows. Restart Now is available in the management window only. The management window also provides profile editing, Test Connection, import/export, diagnostics, and update controls.
 
 macOS notifications are sent when a profile Needs Attention, when auto-start cannot connect, and when a profile recovers after an outage longer than one minute. Individual retries and brief interruptions do not notify. Notifications can be disabled per profile.
 

@@ -9,15 +9,16 @@ struct MenuContent: View {
 
     var body: some View {
         ForEach(model.profiles) { profile in
-            Button(menuTitle(for: profile)) {
+            Button {
                 model.toggle(profileID: profile.id)
-            }
-            .disabled(!model.canToggle(profileID: profile.id))
-            if model.canRestart(profileID: profile.id) {
-                Button("Restart Now — \(profile.displayName.rawValue)") {
-                    model.restart(profileID: profile.id)
+            } label: {
+                Label {
+                    Text(model.menuTitle(for: profile))
+                } icon: {
+                    Image(nsImage: statusIndicator(for: profile))
                 }
             }
+            .disabled(!model.canToggle(profileID: profile.id))
         }
         if !model.profiles.isEmpty {
             Divider()
@@ -34,10 +35,18 @@ struct MenuContent: View {
         .keyboardShortcut("q")
     }
 
-    private func menuTitle(for profile: TunnelProfile) -> String {
-        "\(model.actionTitle(profileID: profile.id)) \(profile.displayName.rawValue)"
-            + " — \(model.state(of: profile.id).displayName)"
-            + (model.changedConfigurationIDs.contains(profile.id) ? " — Configuration Changed" : "")
+    private func statusIndicator(for profile: TunnelProfile) -> NSImage {
+        let color: NSColor = switch model.state(of: profile.id) {
+        case .connected: .systemGreen
+        case .stopped, .stopping: .systemGray
+        case .connecting, .reconnecting, .needsAttention: .systemOrange
+        }
+        // Non-template artwork preserves status colors in the native menu.
+        return NSImage(size: NSSize(width: 14, height: 14), flipped: false) { _ in
+            color.setFill()
+            NSBezierPath(ovalIn: NSRect(x: 3, y: 3, width: 8, height: 8)).fill()
+            return true
+        }
     }
 
     private func showManagementWindow() {
