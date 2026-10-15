@@ -25,5 +25,9 @@ let package = Package(
             name: "EZTunnelCoreTests",
             dependencies: ["EZTunnelCore", "EZTunnelAppSupport"]
         ),
+        .testTarget(
+            name: "EZTunnelAppTests",
+            dependencies: ["EZTunnel", "EZTunnelCore"]
+        ),
     ]
 )

@@ -11,10 +11,13 @@ final class ApplicationModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let application: EZTunnelApplication
+    private let startupFailureMessage: String?
     private var recoveryEvents: MacOSRecoveryEvents?
 
-    init(application: EZTunnelApplication) {
+    init(application: EZTunnelApplication, startupFailureMessage: String? = nil) {
         self.application = application
+        self.startupFailureMessage = startupFailureMessage
+        self.errorMessage = startupFailureMessage
         self.profiles = application.profiles
         self.changedConfigurationIDs = Set(
             application.profiles.compactMap {
@@ -52,14 +55,19 @@ final class ApplicationModel: ObservableObject {
             model.recoveryEvents = MacOSRecoveryEvents(application: model.application)
             return model
         } catch {
-            let fallback = try! EZTunnelApplication(persistence: UnavailablePersistence())
-            let model = ApplicationModel(application: fallback)
-            model.errorMessage = error.localizedDescription
-            return model
+            let persistence = UnavailablePersistence(startupError: error)
+            let fallback = try! EZTunnelApplication(persistence: persistence)
+            return ApplicationModel(
+                application: fallback, startupFailureMessage: persistence.errorDescription
+            )
         }
     }
 
     func save(_ profile: TunnelProfile, credential: String?) -> Bool {
+        if let startupFailureMessage {
+            errorMessage = startupFailureMessage
+            return false
+        }
         do {
             try application.save(profile, credential: credential)
             profiles = application.profiles
@@ -150,7 +158,22 @@ final class ApplicationModel: ObservableObject {
     }
 }
 
-private struct UnavailablePersistence: ProfilePersistence {
+struct UnavailablePersistence: ProfilePersistence, LocalizedError {
+    private let errorDomain: String
+    private let errorCode: Int
+
+    init(startupError: any Error) {
+        let error = startupError as NSError
+        errorDomain = error.domain
+        errorCode = error.code
+    }
+
+    var errorDescription: String? {
+        "Cannot save Tunnel Profile because EZ Tunnel could not finish starting "
+            + "(\(errorDomain), code \(errorCode)). Quit and reopen EZ Tunnel. "
+            + "If this persists, report this error."
+    }
+
     func load() throws -> Data? { nil }
-    func save(_ data: Data) throws { throw CocoaError(.fileWriteUnknown) }
+    func save(_ data: Data) throws { throw self }
 }
