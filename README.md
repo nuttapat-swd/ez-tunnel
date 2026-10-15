@@ -52,6 +52,14 @@ Each Tunnel Profile stores its SSH hostname, port, optional username, and
 authentication method directly. Passwords and private-key passphrases are stored in
 macOS Keychain and are never written to profile JSON.
 
+Notifications identify profiles that Need Attention, Auto-start Profiles that
+cannot connect, and recovery after an interruption longer than 60 seconds.
+Retries stay quiet, and unresolved failures notify once until recovery or stop.
+Use **Enable notifications** in the profile editor to disable them for that profile;
+this preference persists and applies immediately. Existing profiles default to enabled.
+Manual application launch requests macOS notification permission. Login launch
+never prompts and uses the permission already granted in System Settings.
+
 Saved edits do not interrupt an Active Profile. **Configuration Changed** appears
 beside its lifecycle state when saved values differ from the current attempt.
 **Restart Now**, in the management window or menu bar, stops the owned process and

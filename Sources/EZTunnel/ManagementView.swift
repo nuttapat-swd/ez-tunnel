@@ -76,6 +76,7 @@ struct ManagementView: View {
                             .foregroundStyle(.secondary)
                     }
                     Toggle("Start automatically at login", isOn: $draft.autoStart)
+                    Toggle("Enable notifications", isOn: $draft.notificationsEnabled)
                 }
 
                 Section("Local Forwards") {

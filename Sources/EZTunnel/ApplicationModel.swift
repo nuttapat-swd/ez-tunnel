@@ -45,7 +45,8 @@ final class ApplicationModel: ObservableObject {
                     persistence: persistence,
                     credentialStore: KeychainSSHCredentialStore(),
                     loginItemManager: MacOSLoginItemManager(),
-                    recoveryJournal: recoveryJournal
+                    recoveryJournal: recoveryJournal,
+                    notificationDelivery: MacOSTunnelNotifications()
                 )
             )
             model.recoveryEvents = MacOSRecoveryEvents(application: model.application)
